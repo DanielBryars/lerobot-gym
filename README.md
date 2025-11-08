@@ -1,13 +1,12 @@
-# Basic sO101 simulation environment.
+# Basic so-101 simulation environment.
 
 ![output.gif](assets/media/output.gif)
 
-Implements a SO-101 robotic arm simulaltion environment for the [EnvHub](https://huggingface.co/docs/lerobot/envhub).
+Implements a so-101 robotic arm simulaltion environment for the [EnvHub](https://huggingface.co/docs/lerobot/envhub).
 
-- Observation is a `np.ndarray.shape = 640, 480`.
+- Observation is a `np.ndarray.shape = (640, 480, 3)`.
 - Action is a `np.ndarray.shape = 6` where each element represents the joint control. 
 - Reward is the euclidian distance between the gripper and the red block, which it needs to minimize.
-
 
 
 ## Basic usage
@@ -31,6 +30,13 @@ finally:
     env.close()
 
 ```
+
+## ToDo
+Things I want to do
+
+- Make a hardcoded policy that can pick up the block.
+- First attempt of training a model.
+
 
 ### Assets
 All robot files are from [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)
