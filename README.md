@@ -1,6 +1,8 @@
-# Basic so-101 simulation environment.
+# <div style="text-align:center; border-radius:30px 30px; padding:7px; color:white; margin:0; font-size:150%; font-family:Arial; background-color:#636363; overflow:hidden"><b> Basic so-101 simulation environment</b></div>
 
-![output.gif](assets/media/output.gif)
+ <p align="center">
+<img src="assets/media/output.gif" alt="Basic policy" width="50%"/> 
+</p>
 
 Implements a so-101 robotic arm simulaltion environment for the [EnvHub](https://huggingface.co/docs/lerobot/envhub).
 
@@ -13,9 +15,9 @@ Implements a so-101 robotic arm simulaltion environment for the [EnvHub](https:/
 
 ```python
 SO101Env(
-    urdf_path=Path("assets/SO-ARM100/Simulation/SO101/scene_with_cube.xml"), 
-    width=640, 
-    height=480)
+    xml_pth=Path("assets/SO-ARM100/Simulation/SO101/scene_with_cube.xml"), 
+    obs_w=640, 
+    obs_h=480)
 env = gym.make(
     "base-sO101-env-v0",
 )
@@ -38,7 +40,8 @@ Things I want to do
 - First attempt of training a model.
 
 
-### Assets
+# <div style="text-align:center; border-radius:30px 30px; padding:7px; color:white; margin:0; font-size:150%; font-family:Arial; background-color:#636363; overflow:hidden"><b> References</b></div>
+## Assets
 All robot files are from [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100)
 ```bib
 @software{Knight_Standard_Open_SO-100,
@@ -47,6 +50,7 @@ All robot files are from [SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100
     url = {https://github.com/TheRobotStudio/SO-ARM100}
 }
 ```
+## MuJoCo
 
 [MuJoCo library used](https://github.com/google-deepmind/mujoco)
 ```bib

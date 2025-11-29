@@ -5,7 +5,6 @@ import cv2
 import gymnasium as gym
 import mujoco
 import numpy as np
-from gymnasium import spaces
 
 
 class SO101Env(gym.Env):
@@ -14,44 +13,46 @@ class SO101Env(gym.Env):
     def __init__(
         self,
         xml_pth: Path = Path("assets/SO-ARM100/Simulation/SO101/scene_with_cube.xml"),
-        width: int = 640,
-        height: int = 480,
-        max_episode_steps: int = 1_000,
-        camera_distance: float = 1.0,
-        camera_azimuth: int = 100,
+        obs_h: int = 480,
+        obs_w: int = 640,
+        n_max_epi_steps: int = 1_000,
+        cam_dis: float = 1.0,
+        cam_azi: int = 100,
+        n_sim_steps: int = 10,
     ) -> None:
         """Most simple S0101 environment. Reinforcement learning environment where reward is
         defined by the euclidian distance between the gripper and a red block that it needs to pick up.
 
 
-
         Args:
             xml_pth (Path, optional): Path to the scene .xml file that containing the robot and the cube it needs to pickup. Defaults to Path("assets/SO-ARM100/Simulation/SO101/scene_with_cube.xml").
-            width (int, optional): Render width. Defaults to 640.
-            height (int, optional): _description_. Defaults to 480.
-            max_episode_steps (int, optional): Size of on Episode. Defaults to 200.
-            camera_distance (float, optional): Distance of the render camera to the robot. Defaults to 1.0.
-            camera_azimuth (int, optional): Azimuth of the render camera. Defaults to 100.
+            obs_w (int, optional): Render obs_w. Defaults to 640.
+            obs_h (int, optional): _description_. Defaults to 480.
+            n_max_epi_steps (int, optional): Size of on Episode. Defaults to 1_000.
+            cam_dis (float, optional): Distance of the render camera to the robot. Defaults to 1.0.
+            cam_azi (int, optional): Azimuth of the render camera. Defaults to 100.
+            n_sim_steps (int, optional): Number of mujoco simulation steps.
         """
         self.mj_model = mujoco.MjModel.from_xml_path(str(xml_pth))
         self.mj_data = mujoco.MjData(self.mj_model)
-        self.width = width
-        self.height = height
+        self.obs_h = obs_h
+        self.obs_w = obs_w
+        self.n_sim_steps = n_sim_steps
         self.mj_renderer = mujoco.Renderer(
-            self.mj_model, height=self.height, width=self.width
+            self.mj_model, height=self.obs_h, width=self.obs_w
         )
 
-        self.max_episode_steps = max_episode_steps
+        self.n_max_epi_steps = n_max_epi_steps
         self.current_step = 0
         self.action_space = gym.spaces.Box(
             low=np.array([-1.91986, -1.74533, -1.69, -1.65806, -2.74385, -0.17453]),
             high=np.array([1.91986, 1.74533, 1.69, 1.65806, 2.84121, 1.74533]),
-            shape=(self.mj_model.nu,),  # Number of actuators
+            shape=(self.mj_model.nu,),
             dtype=np.float32,
         )
 
         self.observation_space = gym.spaces.Box(
-            low=0, high=255, shape=(self.height, self.width, 3), dtype=np.uint8
+            low=0, high=255, shape=(self.obs_h, self.obs_w, 3), dtype=np.uint8
         )
         self.gripper_geom_id = mujoco.mj_name2id(
             self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "moving_jaw_so101_v1"
@@ -59,17 +60,18 @@ class SO101Env(gym.Env):
         self.cube_geom_id = mujoco.mj_name2id(
             self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, "cube_geom"
         )
-        self.camera_distance = camera_distance
-        self.camera_azimuth = camera_azimuth
+        self.cam_dis = cam_dis
+        self.cam_azi = cam_azi
 
     def step(
         self, action: np.ndarray
     ) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         # Apply the action and update the scene
         self.mj_data.ctrl = action
-        mujoco.mj_step(self.mj_model, self.mj_data)
+        for _ in range(self.n_sim_steps):
+            mujoco.mj_step(self.mj_model, self.mj_data)
         self.mj_renderer.update_scene(self.mj_data)
-
+        
         # Get a rendered observation
         obs = self._get_obs()
 
@@ -77,7 +79,7 @@ class SO101Env(gym.Env):
         reward = self._compute_reward()
 
         # Check if the episode is terminated or truncated
-        terminated = self.current_step >= self.max_episode_steps
+        terminated = self.current_step >= self.n_max_epi_steps
         truncated = False
         info = {}
 
@@ -106,18 +108,18 @@ class SO101Env(gym.Env):
         cube_pos = self.mj_data.geom_xpos[self.cube_geom_id]
 
         # Return the negative distance as the reward
-    
+        return -np.linalg.norm(gripper_pos - cube_pos)    
+
     def _get_obs(self) -> np.ndarray:
         """Render observation
 
         Returns:
             np.ndarray: Obervation, rendered image
         """
-        self.mj_renderer.update_scene(self.mj_data)
-        camera = mujoco.MjvCamera()
-        camera.distance = self.camera_distance  # Decrease this value to zoom in
-        camera.azimuth = self.camera_azimuth  # Camera azimuth angle (degrees)
-        self.mj_renderer.update_scene(self.mj_data, camera=camera)
+        mj_cam = mujoco.MjvCamera()
+        mj_cam.distance = self.cam_dis
+        mj_cam.azimuth = self.cam_azi
+        self.mj_renderer.update_scene(self.mj_data, camera=mj_cam)
         return self.mj_renderer.render().copy()
 
     def close(self) -> None:
