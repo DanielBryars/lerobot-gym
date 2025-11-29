@@ -1,7 +1,7 @@
 # <div style="text-align:center; border-radius:30px 30px; padding:7px; color:white; margin:0; font-size:150%; font-family:Arial; background-color:#636363; overflow:hidden"><b> Basic so-101 simulation environment</b></div>
 
  <p align="center">
-<img src="assets/media/output.gif" alt="Basic policy" width="50%"/> 
+<img src="assets/media/output.gif" alt="Basic policy" width="75%"/> 
 </p>
 
 Implements a so-101 robotic arm simulaltion environment for the [EnvHub](https://huggingface.co/docs/lerobot/envhub).
