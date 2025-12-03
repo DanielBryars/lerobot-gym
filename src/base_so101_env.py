@@ -10,9 +10,12 @@ import numpy as np
 class SO101Env(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 4}
 
+    # Get absolute path to assets relative to this file's location
+    _DEFAULT_XML = Path(__file__).parent.parent / "assets" / "SO-ARM100" / "Simulation" / "SO101" / "scene_with_cube.xml"
+
     def __init__(
         self,
-        xml_pth: Path = Path("assets/SO-ARM100/Simulation/SO101/scene_with_cube.xml"),
+        xml_pth: Path = None,
         obs_h: int = 480,
         obs_w: int = 640,
         n_max_epi_steps: int = 1_000,
@@ -33,6 +36,8 @@ class SO101Env(gym.Env):
             cam_azi (int, optional): Azimuth of the render camera. Defaults to 100.
             n_sim_steps (int, optional): Number of mujoco simulation steps.
         """
+        if xml_pth is None:
+            xml_pth = self._DEFAULT_XML
         self.mj_model = mujoco.MjModel.from_xml_path(str(xml_pth))
         self.mj_data = mujoco.MjData(self.mj_model)
         self.obs_h = obs_h

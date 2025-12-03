@@ -1,0 +1,6 @@
+# Additional dependencies for running policy evaluation with SmolVLA/ACT models
+# Install with: pip install -r requirements-eval.txt
+
+transformers>=4.40.0
+num2words
+accelerate
