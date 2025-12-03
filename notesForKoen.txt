@@ -1,0 +1,56 @@
+Notes for Koen - Fixes to lerobot-gym
+======================================
+
+Hi Koen! I got your SO101 sim working with LeRobot policies. Here are the
+issues I found and fixed:
+
+
+1. pyproject.toml - Torch version constraint
+--------------------------------------------
+Problem: `torch==2.2.1` is pinned but that exact version isn't available
+via pip anymore.
+
+Fix: Change to `torch>=2.2.1`
+
+    -    "torch==2.2.1",
+    +    "torch>=2.2.1",
+
+
+2. src/base_so101_env.py - Relative path breaks
+-----------------------------------------------
+Problem: `xml_pth=Path("assets/...")` fails when running scripts from a
+different working directory.
+
+Fix: Use `__file__` to get absolute path relative to the module:
+
+    class SO101Env(gym.Env):
+        _DEFAULT_XML = Path(__file__).parent.parent / "assets" / "SO-ARM100" / "Simulation" / "SO101" / "scene_with_cube.xml"
+
+        def __init__(self, xml_pth: Path = None, ...):
+            if xml_pth is None:
+                xml_pth = self._DEFAULT_XML
+
+
+3. Missing scene_with_cube.xml
+------------------------------
+Problem: base_so101_env.py references `scene_with_cube.xml` but it doesn't
+exist in the SO-ARM100 submodule.
+
+Fix: I added `setup_scene.py` that creates the file. Users run it after cloning:
+
+    python setup_scene.py
+
+The scene XML includes so101_new_calib.xml and adds a red cube for pick/place tasks.
+
+
+Bonus: evaluate_policy.py
+-------------------------
+I also added a script to evaluate LeRobot policies (ACT, SmolVLA, etc.) in the sim:
+
+    python evaluate_policy.py --policy danbhf/smolVla_so100_pick_place --episodes 3 --device cuda
+
+Works with HuggingFace model paths or local checkpoints.
+
+
+Cheers,
+Dan

@@ -11,16 +11,23 @@ Implements a so-101 robotic arm simulaltion environment for the [EnvHub](https:/
 - Reward is the euclidian distance between the gripper and the red block, which it needs to minimize.
 
 
+## Installation
+
+```bash
+git clone https://github.com/DanielBryars/lerobot-gym.git
+cd lerobot-gym
+git submodule update --init
+python setup_scene.py
+pip install -e .
+```
+
 ## Basic usage
 
 ```python
-SO101Env(
-    xml_pth=Path("assets/SO-ARM100/Simulation/SO101/scene_with_cube.xml"), 
-    obs_w=640, 
-    obs_h=480)
-env = gym.make(
-    "base-sO101-env-v0",
-)
+import gymnasium as gym
+import env  # registers the environment
+
+env = gym.make("base-sO101-env-v0")
 try:
     obs, _ = env.reset()
     for i in range(10):
@@ -30,7 +37,21 @@ try:
             break
 finally:
     env.close()
+```
 
+## Evaluating LeRobot Policies
+
+You can evaluate trained LeRobot policies (ACT, SmolVLA, etc.) in the simulation:
+
+```bash
+# Install extra dependencies
+pip install -r requirements-eval.txt
+
+# Run with a HuggingFace model
+python evaluate_policy.py --policy danbhf/smolVla_so100_pick_place --episodes 5 --device cuda
+
+# Run with random actions (for testing)
+python evaluate_policy.py --policy random --episodes 3 --render
 ```
 
 ## ToDo
