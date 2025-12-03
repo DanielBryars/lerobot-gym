@@ -1,0 +1,189 @@
+#!/usr/bin/env python
+"""
+Teleoperate the SO101 simulation using a physical leader arm.
+
+Look at the sim output and move your leader arm to control the simulated robot.
+Great for checking calibration matches between real and sim.
+
+Usage:
+    python teleop_sim.py
+    python teleop_sim.py --leader-port COM8 --fps 30
+"""
+import argparse
+import json
+import time
+from pathlib import Path
+
+import cv2
+import gymnasium as gym
+import numpy as np
+
+import env  # registers the environment
+
+
+# Sim action space bounds (radians)
+SIM_ACTION_LOW = np.array([-1.91986, -1.74533, -1.69, -1.65806, -2.74385, -0.17453])
+SIM_ACTION_HIGH = np.array([1.91986, 1.74533, 1.69, 1.65806, 2.84121, 1.74533])
+
+
+def normalized_to_radians(normalized_values: np.ndarray) -> np.ndarray:
+    """
+    Convert from lerobot normalized values to sim radians.
+
+    Leader returns:
+    - Joints 0-4: normalized to [-100, 100]
+    - Gripper (5): normalized to [0, 100]
+
+    Sim expects radians within SIM_ACTION_LOW to SIM_ACTION_HIGH.
+    """
+    radians = np.zeros(6, dtype=np.float32)
+
+    # Joints 0-4: map [-100, 100] -> [low, high]
+    for i in range(5):
+        norm_val = normalized_values[i]
+        # Map from [-100, 100] to [0, 1]
+        t = (norm_val + 100) / 200.0
+        # Map to [low, high]
+        radians[i] = SIM_ACTION_LOW[i] + t * (SIM_ACTION_HIGH[i] - SIM_ACTION_LOW[i])
+
+    # Gripper: map [0, 100] -> [low, high]
+    t = normalized_values[5] / 100.0
+    radians[5] = SIM_ACTION_LOW[5] + t * (SIM_ACTION_HIGH[5] - SIM_ACTION_LOW[5])
+
+    return radians
+
+
+def load_config():
+    """Try to load config.json from lerobot-scratch repo."""
+    config_paths = [
+        Path("E:/git/ai/lerobot-scratch/config.json"),
+        Path("../lerobot-scratch/config.json"),
+        Path("config.json"),
+    ]
+    for path in config_paths:
+        if path.exists():
+            with open(path) as f:
+                return json.load(f)
+    return None
+
+
+def run_teleop(leader_port: str, fps: int = 30):
+    """Run teleoperation with physical leader arm controlling sim."""
+
+    # Import lerobot teleoperator
+    from lerobot.teleoperators.so100_leader import SO100Leader, SO100LeaderConfig
+
+    # Create leader arm connection
+    print(f"Connecting to leader arm on {leader_port}...")
+    leader_config = SO100LeaderConfig(port=leader_port)
+    leader = SO100Leader(leader_config)
+    leader.connect()
+    print("Leader arm connected!")
+
+    # Create simulation environment
+    print("Creating SO101 simulation...")
+    sim_env = gym.make("base-sO101-env-v0")
+    obs_image, _ = sim_env.reset()
+
+    # Setup display window
+    cv2.namedWindow("SO101 Teleop Sim", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("SO101 Teleop Sim", 800, 600)
+
+    print(f"\nTeleoperation started at {fps} FPS")
+    print("Move your leader arm to control the simulation")
+    print("Press 'q' to quit, 'r' to reset\n")
+
+    frame_time = 1.0 / fps
+    step_count = 0
+
+    joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+
+    try:
+        while True:
+            loop_start = time.time()
+
+            # Read leader arm position using get_action()
+            leader_action = leader.get_action()
+
+            # Extract joint positions in order
+            normalized = np.array([
+                leader_action["shoulder_pan.pos"],
+                leader_action["shoulder_lift.pos"],
+                leader_action["elbow_flex.pos"],
+                leader_action["wrist_flex.pos"],
+                leader_action["wrist_roll.pos"],
+                leader_action["gripper.pos"],
+            ], dtype=np.float32)
+
+            # Convert to radians for sim
+            joint_radians = normalized_to_radians(normalized)
+
+            # Clip to valid range (just in case)
+            joint_radians = np.clip(joint_radians, SIM_ACTION_LOW, SIM_ACTION_HIGH)
+
+            # Send to simulation
+            obs_image, reward, terminated, truncated, info = sim_env.step(joint_radians)
+            step_count += 1
+
+            # Display
+            frame = cv2.cvtColor(obs_image, cv2.COLOR_RGB2BGR)
+            cv2.putText(frame, f"Step: {step_count}", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, f"Reward: {reward:.3f}", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            # Show joint values (both normalized and radians)
+            for i, name in enumerate(joint_names):
+                cv2.putText(frame, f"{name[:10]}: {normalized[i]:6.1f} -> {joint_radians[i]:5.2f}rad",
+                           (10, 100 + i*25),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
+
+            cv2.imshow("SO101 Teleop Sim", frame)
+
+            # Handle key presses
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("Quit requested")
+                break
+            elif key == ord('r'):
+                print("Resetting simulation...")
+                obs_image, _ = sim_env.reset()
+                step_count = 0
+
+            # Maintain frame rate
+            elapsed = time.time() - loop_start
+            if elapsed < frame_time:
+                time.sleep(frame_time - elapsed)
+
+    finally:
+        cv2.destroyAllWindows()
+        sim_env.close()
+        leader.disconnect()
+        print("Teleop ended")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Teleoperate SO101 sim with leader arm")
+    parser.add_argument("--leader-port", "-p", type=str, default=None,
+                        help="Serial port for leader arm (default: from config.json)")
+    parser.add_argument("--fps", "-f", type=int, default=30,
+                        help="Target frame rate (default: 30)")
+
+    args = parser.parse_args()
+
+    # Get leader port from config if not specified
+    leader_port = args.leader_port
+    if leader_port is None:
+        config = load_config()
+        if config and "leader" in config:
+            leader_port = config["leader"]["port"]
+            print(f"Using leader port from config: {leader_port}")
+        else:
+            leader_port = "COM8"  # fallback default
+            print(f"No config found, using default: {leader_port}")
+
+    run_teleop(leader_port, args.fps)
+
+
+if __name__ == "__main__":
+    main()

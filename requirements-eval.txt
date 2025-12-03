@@ -1,6 +1,10 @@
-# Additional dependencies for running policy evaluation with SmolVLA/ACT models
+# Additional dependencies for running policy evaluation and teleoperation
 # Install with: pip install -r requirements-eval.txt
+
+# For GPU support (CUDA 12.8), install PyTorch nightly FIRST:
+#   pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
 
 transformers>=4.40.0
 num2words
 accelerate
+feetech-servo-sdk
