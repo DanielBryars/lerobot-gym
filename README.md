@@ -54,11 +54,51 @@ python evaluate_policy.py --policy danbhf/smolVla_so100_pick_place --episodes 5 
 python evaluate_policy.py --policy random --episodes 3 --render
 ```
 
+## Teleoperation
+
+Control the simulation with a physical leader arm:
+
+```bash
+# Install motor control dependencies
+pip install -r requirements-eval.txt
+
+# Run teleoperation (reads COM port from config.json)
+python teleop_sim.py
+
+# Or specify port explicitly
+python teleop_sim.py --leader-port COM8 --fps 30
+```
+
+Requires STS3250 motors with calibration stored in EEPROM.
+
+## VR Support (Quest 3 / OpenXR)
+
+View the simulation in VR while teleoperating with the physical arm:
+
+```bash
+# Install VR dependencies
+pip install -r requirements-vr.txt
+
+# Standalone VR viewer (no teleop)
+python vr_viewer.py --mirror
+
+# VR + physical leader arm teleoperation
+python teleop_vr.py --mirror
+```
+
+**Setup:**
+1. Connect Quest 3 via Quest Link (cable or Air Link)
+2. Set OpenXR runtime to Oculus in Windows Settings
+3. Run the script and put on headset
+
+See [VR_ROADMAP.md](VR_ROADMAP.md) for details.
+
 ## ToDo
 Things I want to do
 
 - Make a hardcoded policy that can pick up the block.
 - First attempt of training a model.
+- Test VR teleoperation with Quest 3
 
 
 # <div style="text-align:center; border-radius:30px 30px; padding:7px; color:white; margin:0; font-size:150%; font-family:Arial; background-color:#636363; overflow:hidden"><b> References</b></div>
