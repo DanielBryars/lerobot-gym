@@ -1,0 +1,19 @@
+# VR dependencies for SO101 simulation
+# Install with: pip install -r requirements-vr.txt
+
+# OpenXR bindings for VR headset support
+pyopenxr>=1.0.0
+
+# OpenGL and windowing
+PyOpenGL>=3.1.0
+glfw>=2.5.0
+
+# Numerical computation
+numpy>=1.20.0
+
+# Physics simulation (should already be installed)
+mujoco>=3.0.0
+
+# Notes:
+# - Quest 3 users: Install Quest Link app and set OpenXR runtime to Oculus
+# - Also install requirements-eval.txt for motor control dependencies
