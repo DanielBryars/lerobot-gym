@@ -1,0 +1,5 @@
+gymnasium>=1.2.2
+ipython>=9.7.0
+lerobot[envs]
+mujoco>=3.3.7
+torch>=2.2.1

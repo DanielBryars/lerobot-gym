@@ -67,17 +67,43 @@ def load_config():
     return None
 
 
+def create_leader_bus(port: str):
+    """Create a FeetechMotorsBus for leader arm with STS3250 motors.
+
+    Reads calibration from EEPROM (written by align_arms.py).
+    """
+    from lerobot.motors import Motor, MotorNormMode
+    from lerobot.motors.feetech import FeetechMotorsBus
+
+    # Use sts3250 instead of sts3215
+    bus = FeetechMotorsBus(
+        port=port,
+        motors={
+            "shoulder_pan": Motor(1, "sts3250", MotorNormMode.RANGE_M100_100),
+            "shoulder_lift": Motor(2, "sts3250", MotorNormMode.RANGE_M100_100),
+            "elbow_flex": Motor(3, "sts3250", MotorNormMode.RANGE_M100_100),
+            "wrist_flex": Motor(4, "sts3250", MotorNormMode.RANGE_M100_100),
+            "wrist_roll": Motor(5, "sts3250", MotorNormMode.RANGE_M100_100),
+            "gripper": Motor(6, "sts3250", MotorNormMode.RANGE_0_100),
+        },
+    )
+    return bus
+
+
 def run_teleop(leader_port: str, fps: int = 30):
     """Run teleoperation with physical leader arm controlling sim."""
 
-    # Import lerobot teleoperator
-    from lerobot.teleoperators.so100_leader import SO100Leader, SO100LeaderConfig
+    # Create leader arm connection with STS3250 motors
+    print(f"Connecting to leader arm on {leader_port} (STS3250 motors)...")
+    bus = create_leader_bus(leader_port)
+    bus.connect()
 
-    # Create leader arm connection
-    print(f"Connecting to leader arm on {leader_port}...")
-    leader_config = SO100LeaderConfig(port=leader_port)
-    leader = SO100Leader(leader_config)
-    leader.connect()
+    # Read calibration from EEPROM (same approach as SO100LeaderSTS3250)
+    print("Reading calibration from motor EEPROM...")
+    bus.calibration = bus.read_calibration()
+
+    # Disable torque so leader arm can be moved freely
+    bus.disable_torque()
     print("Leader arm connected!")
 
     # Create simulation environment
@@ -102,17 +128,17 @@ def run_teleop(leader_port: str, fps: int = 30):
         while True:
             loop_start = time.time()
 
-            # Read leader arm position using get_action()
-            leader_action = leader.get_action()
+            # Read leader arm positions
+            positions = bus.sync_read("Present_Position")
 
             # Extract joint positions in order
             normalized = np.array([
-                leader_action["shoulder_pan.pos"],
-                leader_action["shoulder_lift.pos"],
-                leader_action["elbow_flex.pos"],
-                leader_action["wrist_flex.pos"],
-                leader_action["wrist_roll.pos"],
-                leader_action["gripper.pos"],
+                positions["shoulder_pan"],
+                positions["shoulder_lift"],
+                positions["elbow_flex"],
+                positions["wrist_flex"],
+                positions["wrist_roll"],
+                positions["gripper"],
             ], dtype=np.float32)
 
             # Convert to radians for sim
@@ -158,7 +184,7 @@ def run_teleop(leader_port: str, fps: int = 30):
     finally:
         cv2.destroyAllWindows()
         sim_env.close()
-        leader.disconnect()
+        bus.disconnect()
         print("Teleop ended")
 
 
