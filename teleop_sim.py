@@ -68,10 +68,7 @@ def load_config():
 
 
 def create_leader_bus(port: str):
-    """Create a FeetechMotorsBus for leader arm with STS3250 motors.
-
-    Reads calibration from EEPROM (written by align_arms.py).
-    """
+    """Create a FeetechMotorsBus for leader arm with STS3250 motors."""
     from lerobot.motors import Motor, MotorNormMode
     from lerobot.motors.feetech import FeetechMotorsBus
 
@@ -90,6 +87,23 @@ def create_leader_bus(port: str):
     return bus
 
 
+def load_calibration(arm_id: str = "leader_so100"):
+    """Load calibration from JSON file."""
+    import draccus
+    from lerobot.motors import MotorCalibration
+
+    calib_path = Path.home() / ".cache/huggingface/lerobot/calibration/teleoperators/so100_leader_sts3250" / f"{arm_id}.json"
+
+    if not calib_path.exists():
+        raise FileNotFoundError(
+            f"Calibration file not found: {calib_path}\n"
+            "Run 'python calibrate_from_zero.py --leader' first."
+        )
+
+    with open(calib_path) as f, draccus.config_type("json"):
+        return draccus.load(dict[str, MotorCalibration], f)
+
+
 def run_teleop(leader_port: str, fps: int = 30):
     """Run teleoperation with physical leader arm controlling sim."""
 
@@ -98,9 +112,9 @@ def run_teleop(leader_port: str, fps: int = 30):
     bus = create_leader_bus(leader_port)
     bus.connect()
 
-    # Read calibration from EEPROM (same approach as SO100LeaderSTS3250)
-    print("Reading calibration from motor EEPROM...")
-    bus.calibration = bus.read_calibration()
+    # Load calibration from JSON file (created by calibrate_from_zero.py)
+    print("Loading calibration from file...")
+    bus.calibration = load_calibration()
 
     # Disable torque so leader arm can be moved freely
     bus.disable_torque()
@@ -117,10 +131,16 @@ def run_teleop(leader_port: str, fps: int = 30):
 
     print(f"\nTeleoperation started at {fps} FPS")
     print("Move your leader arm to control the simulation")
-    print("Press 'q' to quit, 'r' to reset\n")
+    print("Press 'q' to quit, 'r' to reset")
+    print("Camera: arrow keys to rotate, +/- to zoom\n")
 
     frame_time = 1.0 / fps
     step_count = 0
+
+    # Camera controls (access underlying env)
+    cam_azimuth = sim_env.unwrapped.cam_azi
+    cam_distance = sim_env.unwrapped.cam_dis
+    cam_elevation = sim_env.unwrapped.cam_elev
 
     joint_names = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
 
@@ -160,9 +180,14 @@ def run_teleop(leader_port: str, fps: int = 30):
 
             # Show joint values (both normalized and radians)
             for i, name in enumerate(joint_names):
-                cv2.putText(frame, f"{name[:10]}: {normalized[i]:6.1f} -> {joint_radians[i]:5.2f}rad",
+                deg = np.degrees(joint_radians[i])
+                cv2.putText(frame, f"{name[:10]}: {normalized[i]:6.1f} -> {joint_radians[i]:5.2f}rad ({deg:6.1f}°)",
                            (10, 100 + i*25),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
+
+            # Show camera info
+            cv2.putText(frame, f"Cam: azi={cam_azimuth} elev={cam_elevation} dist={cam_distance:.1f} (wasd/+-)",
+                       (10, 270), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
             cv2.imshow("SO101 Teleop Sim", frame)
 
@@ -175,6 +200,25 @@ def run_teleop(leader_port: str, fps: int = 30):
                 print("Resetting simulation...")
                 obs_image, _ = sim_env.reset()
                 step_count = 0
+            # Camera controls: a/d = rotate, w/s = elevation, +/- = zoom
+            elif key == ord('a'):  # Rotate left
+                cam_azimuth -= 5
+                sim_env.unwrapped.cam_azi = cam_azimuth
+            elif key == ord('d'):  # Rotate right
+                cam_azimuth += 5
+                sim_env.unwrapped.cam_azi = cam_azimuth
+            elif key == ord('w'):  # Tilt up
+                cam_elevation = min(89, cam_elevation + 5)
+                sim_env.unwrapped.cam_elev = cam_elevation
+            elif key == ord('s'):  # Tilt down
+                cam_elevation = max(-89, cam_elevation - 5)
+                sim_env.unwrapped.cam_elev = cam_elevation
+            elif key == ord('+') or key == ord('='):  # Zoom in
+                cam_distance = max(0.3, cam_distance - 0.1)
+                sim_env.unwrapped.cam_dis = cam_distance
+            elif key == ord('-'):  # Zoom out
+                cam_distance += 0.1
+                sim_env.unwrapped.cam_dis = cam_distance
 
             # Maintain frame rate
             elapsed = time.time() - loop_start

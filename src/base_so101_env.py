@@ -21,6 +21,7 @@ class SO101Env(gym.Env):
         n_max_epi_steps: int = 1_000,
         cam_dis: float = 1.0,
         cam_azi: int = 100,
+        cam_elev: int = -20,
         n_sim_steps: int = 10,
     ) -> None:
         """Most simple S0101 environment. Reinforcement learning environment where reward is
@@ -34,6 +35,7 @@ class SO101Env(gym.Env):
             n_max_epi_steps (int, optional): Size of on Episode. Defaults to 1_000.
             cam_dis (float, optional): Distance of the render camera to the robot. Defaults to 1.0.
             cam_azi (int, optional): Azimuth of the render camera. Defaults to 100.
+            cam_elev (int, optional): Elevation of the render camera. Defaults to -20.
             n_sim_steps (int, optional): Number of mujoco simulation steps.
         """
         if xml_pth is None:
@@ -67,6 +69,7 @@ class SO101Env(gym.Env):
         )
         self.cam_dis = cam_dis
         self.cam_azi = cam_azi
+        self.cam_elev = cam_elev
 
     def step(
         self, action: np.ndarray
@@ -124,6 +127,7 @@ class SO101Env(gym.Env):
         mj_cam = mujoco.MjvCamera()
         mj_cam.distance = self.cam_dis
         mj_cam.azimuth = self.cam_azi
+        mj_cam.elevation = self.cam_elev
         self.mj_renderer.update_scene(self.mj_data, camera=mj_cam)
         return self.mj_renderer.render().copy()
 
