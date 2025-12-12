@@ -283,6 +283,7 @@ def replay_episode(
 
     print(f"\nReplaying episode {episode_index} ({len(frames)} frames)...")
     print("Controls: [SPACE] pause/play, [Q] quit, [LEFT/RIGHT] step, [R] restart")
+    print("          [V] toggle wrist camera, [W/S] elev, [Z/X] azi, [-/+] zoom")
 
     # Create environment
     e = gym.make("base-sO101-env-v0")
@@ -310,6 +311,7 @@ def replay_episode(
     frame_idx = start_frame
     paused = False
     frame_delay = int(1000 / fps)  # ms per frame
+    show_wrist_cam = False  # Toggle with 'V' key
 
     while frame_idx < len(frames):
         frame_data = frames[frame_idx]
@@ -333,8 +335,24 @@ def replay_episode(
         if compare:
             recorded_img = extract_image(frame_data)
 
+        # Get wrist camera view if enabled
+        wrist_img = None
+        if show_wrist_cam:
+            wrist_img = e.unwrapped.get_wrist_camera_obs(width=320, height=240)
+
         # Prepare display frame
         sim_display = cv2.cvtColor(obs_sim, cv2.COLOR_RGB2BGR)
+
+        # Overlay wrist camera in corner if available
+        if wrist_img is not None:
+            wrist_display = cv2.cvtColor(wrist_img, cv2.COLOR_RGB2BGR)
+            # Add border
+            wrist_display = cv2.copyMakeBorder(wrist_display, 2, 2, 2, 2, cv2.BORDER_CONSTANT, value=(0, 255, 0))
+            cv2.putText(wrist_display, "WRIST", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            # Place in top-right corner
+            h, w = wrist_display.shape[:2]
+            y_off, x_off = 10, sim_display.shape[1] - w - 10
+            sim_display[y_off:y_off+h, x_off:x_off+w] = wrist_display
 
         if compare and recorded_img is not None:
             # Resize recorded to match sim
@@ -422,6 +440,9 @@ def replay_episode(
             e.unwrapped.cam_dis += 0.1
         elif key_char == ord('=') or key_char == ord('+'):
             e.unwrapped.cam_dis = max(0.3, e.unwrapped.cam_dis - 0.1)
+        elif key_char == ord('v'):
+            show_wrist_cam = not show_wrist_cam
+            print(f"Wrist camera: {'ON' if show_wrist_cam else 'OFF'}")
 
     cv2.destroyAllWindows()
     e.close()
