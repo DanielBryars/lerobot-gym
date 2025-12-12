@@ -7,46 +7,13 @@ import mujoco
 import numpy as np
 
 
-def load_model_with_wrist_camera(xml_path: Path) -> mujoco.MjModel:
-    """Load MuJoCo model and add a wrist camera attached to the gripper body.
-
-    Uses MuJoCo's spec API to programmatically add a camera to the gripper body,
-    keeping changes in the main repo rather than modifying the submodule's XML.
-    """
-    # Load the model spec
-    spec = mujoco.MjSpec.from_file(str(xml_path))
-
-    # Find the gripper body by iterating through all bodies
-    gripper_body = None
-    for body in spec.bodies:
-        if body.name == "gripper":
-            gripper_body = body
-            break
-
-    if gripper_body is None:
-        print("Warning: Could not find gripper body, wrist camera not added")
-        return mujoco.MjModel.from_xml_path(str(xml_path))
-
-    # Add wrist camera to gripper body
-    # Position it behind/above the gripper jaws, looking down at them
-    # Gripper jaws are in -Z direction (gripperframe at z=-0.098)
-    cam = gripper_body.add_camera()
-    cam.name = "wrist_cam"
-    cam.pos = [0.0, 0.03, -0.02]  # Offset up (Y) and slightly toward jaws (-Z)
-    # Tilt down ~60 degrees around X axis to look at gripper jaws
-    # quat for 60° rotation around X: [cos(30°), sin(30°), 0, 0] = [0.866, 0.5, 0, 0]
-    cam.quat = [0.866, 0.5, 0.0, 0.0]
-    cam.fovy = 75  # Wider FOV to see more of the workspace
-
-    # Compile and return the model
-    return spec.compile()
-
-
 class SO101Env(gym.Env):
     metadata = {"render_modes": ["rgb_array"], "render_fps": 4}
 
-    # Get absolute path to assets relative to this file's location
-    _DEFAULT_XML = Path(__file__).parent.parent / "assets" / "SO-ARM100" / "Simulation" / "SO101" / "scene_with_cube.xml"
+    # Scene XML with wrist camera (in main repo, editable)
+    _DEFAULT_XML = Path(__file__).parent.parent / "scenes" / "so101_with_wrist_cam.xml"
+    # Original scene without wrist camera (in submodule)
+    _ORIGINAL_XML = Path(__file__).parent.parent / "assets" / "SO-ARM100" / "Simulation" / "SO101" / "scene_with_cube.xml"
 
     def __init__(
         self,
@@ -58,14 +25,13 @@ class SO101Env(gym.Env):
         cam_azi: int = 100,
         cam_elev: int = -20,
         n_sim_steps: int = 10,
-        add_wrist_camera: bool = True,
     ) -> None:
         """Most simple S0101 environment. Reinforcement learning environment where reward is
         defined by the euclidian distance between the gripper and a red block that it needs to pick up.
 
 
         Args:
-            xml_pth (Path, optional): Path to the scene .xml file that containing the robot and the cube it needs to pickup. Defaults to Path("assets/SO-ARM100/Simulation/SO101/scene_with_cube.xml").
+            xml_pth (Path, optional): Path to the scene .xml file. Defaults to scenes/so101_with_wrist_cam.xml.
             obs_w (int, optional): Render obs_w. Defaults to 640.
             obs_h (int, optional): _description_. Defaults to 480.
             n_max_epi_steps (int, optional): Size of on Episode. Defaults to 1_000.
@@ -73,27 +39,21 @@ class SO101Env(gym.Env):
             cam_azi (int, optional): Azimuth of the render camera. Defaults to 100.
             cam_elev (int, optional): Elevation of the render camera. Defaults to -20.
             n_sim_steps (int, optional): Number of mujoco simulation steps.
-            add_wrist_camera (bool, optional): Add wrist-mounted ego camera. Defaults to True.
         """
         if xml_pth is None:
             xml_pth = self._DEFAULT_XML
 
-        # Load model - optionally with wrist camera added programmatically
-        if add_wrist_camera:
-            self.mj_model = load_model_with_wrist_camera(xml_pth)
-        else:
-            self.mj_model = mujoco.MjModel.from_xml_path(str(xml_pth))
+        self.mj_model = mujoco.MjModel.from_xml_path(str(xml_pth))
         self.mj_data = mujoco.MjData(self.mj_model)
 
-        # Store wrist camera ID if it exists
+        # Find wrist camera if it exists in the model
         self.wrist_cam_id = None
-        if add_wrist_camera:
-            try:
-                self.wrist_cam_id = mujoco.mj_name2id(
-                    self.mj_model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
-                )
-            except Exception:
-                pass
+        try:
+            self.wrist_cam_id = mujoco.mj_name2id(
+                self.mj_model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
+            )
+        except Exception:
+            pass
         self.obs_h = obs_h
         self.obs_w = obs_w
         self.n_sim_steps = n_sim_steps
