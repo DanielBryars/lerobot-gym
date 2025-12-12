@@ -7,11 +7,6 @@ into scenes/so101_with_wrist_cam.xml.
 
 Usage:
     python adjust_wrist_camera.py
-
-Controls:
-    - Sliders: Adjust camera position (X, Y, Z) and rotation (Roll, Pitch, Yaw)
-    - Press 'S' to print the camera config for the XML
-    - Press 'Q' or ESC to quit
 """
 
 import cv2
@@ -23,36 +18,70 @@ from pathlib import Path
 SCENE_XML = Path(__file__).parent / "scenes" / "so101_with_wrist_cam.xml"
 
 
+def quat_to_euler(quat):
+    """Convert quaternion [w, x, y, z] to euler angles (degrees) [roll, pitch, yaw]."""
+    w, x, y, z = quat
+
+    # Roll (x-axis rotation)
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (y-axis rotation)
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        pitch = np.copysign(np.pi / 2, sinp)
+    else:
+        pitch = np.arcsin(sinp)
+
+    # Yaw (z-axis rotation)
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+
+    return np.degrees([roll, pitch, yaw])
+
+
+def euler_to_quat(roll, pitch, yaw):
+    """Convert euler angles (degrees) to quaternion [w, x, y, z]."""
+    r, p, y = np.radians([roll, pitch, yaw])
+    cr, sr = np.cos(r/2), np.sin(r/2)
+    cp, sp = np.cos(p/2), np.sin(p/2)
+    cy, sy = np.cos(y/2), np.sin(y/2)
+
+    w = cr * cp * cy + sr * sp * sy
+    x = sr * cp * cy - cr * sp * sy
+    y_q = cr * sp * cy + sr * cp * sy
+    z = cr * cp * sy - sr * sp * cy
+
+    return np.array([w, x, y_q, z])
+
+
 class CameraAdjuster:
     def __init__(self):
-        # Camera parameters (position and euler angles in degrees)
+        # Load model
+        print(f"Loading {SCENE_XML}...")
+        self.model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
+        self.data = mujoco.MjData(self.model)
+
+        # Get camera and body IDs
+        self.wrist_cam_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
+        )
+        print(f"Wrist camera ID: {self.wrist_cam_id}")
+
+        # Initialize camera parameters (in gripper's local frame)
         self.pos_x = 0.0
-        self.pos_y = 0.03
-        self.pos_z = -0.02
+        self.pos_y = 0.0
+        self.pos_z = -0.05  # Toward gripper tips
         self.roll = 0.0
-        self.pitch = 60.0  # Tilt down
+        self.pitch = 0.0
         self.yaw = 0.0
         self.fovy = 75
 
         # Parameter ranges
         self.pos_range = (-0.15, 0.15)
         self.fov_range = (30, 120)
-
-        # Load model
-        print(f"Loading {SCENE_XML}...")
-        self.model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
-        self.data = mujoco.MjData(self.model)
-
-        # Get wrist camera ID
-        self.wrist_cam_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
-        )
-        print(f"Wrist camera ID: {self.wrist_cam_id}")
-
-        # Get gripper body ID for positioning
-        self.gripper_body_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_BODY, "gripper"
-        )
 
         # Move arm to an interesting position
         self._set_arm_pose([0.3, -0.5, 0.8, 0.5, 0.0, 0.5])
@@ -61,7 +90,7 @@ class CameraAdjuster:
         self.external_renderer = mujoco.Renderer(self.model, height=480, width=640)
         self.wrist_renderer = mujoco.Renderer(self.model, height=480, width=640)
 
-        # Setup window and trackbars
+        # Setup window
         self.window_name = "Wrist Camera Adjustment"
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.window_name, 1300, 700)
@@ -75,69 +104,39 @@ class CameraAdjuster:
 
     def _create_trackbars(self):
         """Create trackbars for camera adjustment."""
-        # Position trackbars (scaled by 1000 for precision)
-        cv2.createTrackbar("X pos (mm)", self.window_name,
-                          int((self.pos_x - self.pos_range[0]) * 1000 / (self.pos_range[1] - self.pos_range[0])),
-                          1000, lambda x: None)
-        cv2.createTrackbar("Y pos (mm)", self.window_name,
-                          int((self.pos_y - self.pos_range[0]) * 1000 / (self.pos_range[1] - self.pos_range[0])),
-                          1000, lambda x: None)
-        cv2.createTrackbar("Z pos (mm)", self.window_name,
-                          int((self.pos_z - self.pos_range[0]) * 1000 / (self.pos_range[1] - self.pos_range[0])),
-                          1000, lambda x: None)
+        def pos_to_slider(val):
+            return int((val - self.pos_range[0]) / (self.pos_range[1] - self.pos_range[0]) * 1000)
 
-        # Rotation trackbars (in degrees, offset by 180 to allow negative)
-        cv2.createTrackbar("Roll (deg)", self.window_name, int(self.roll + 180), 360, lambda x: None)
-        cv2.createTrackbar("Pitch (deg)", self.window_name, int(self.pitch + 180), 360, lambda x: None)
-        cv2.createTrackbar("Yaw (deg)", self.window_name, int(self.yaw + 180), 360, lambda x: None)
-
-        # FOV trackbar
-        cv2.createTrackbar("FOV (deg)", self.window_name,
-                          int(self.fovy - self.fov_range[0]),
+        cv2.createTrackbar("X", self.window_name, pos_to_slider(self.pos_x), 1000, lambda x: None)
+        cv2.createTrackbar("Y", self.window_name, pos_to_slider(self.pos_y), 1000, lambda x: None)
+        cv2.createTrackbar("Z", self.window_name, pos_to_slider(self.pos_z), 1000, lambda x: None)
+        cv2.createTrackbar("Roll", self.window_name, int(self.roll + 180), 360, lambda x: None)
+        cv2.createTrackbar("Pitch", self.window_name, int(self.pitch + 180), 360, lambda x: None)
+        cv2.createTrackbar("Yaw", self.window_name, int(self.yaw + 180), 360, lambda x: None)
+        cv2.createTrackbar("FOV", self.window_name, int(self.fovy - self.fov_range[0]),
                           self.fov_range[1] - self.fov_range[0], lambda x: None)
 
     def _read_trackbars(self):
         """Read current trackbar values."""
-        x_raw = cv2.getTrackbarPos("X pos (mm)", self.window_name)
-        y_raw = cv2.getTrackbarPos("Y pos (mm)", self.window_name)
-        z_raw = cv2.getTrackbarPos("Z pos (mm)", self.window_name)
+        def slider_to_pos(val):
+            return self.pos_range[0] + (val / 1000) * (self.pos_range[1] - self.pos_range[0])
 
-        self.pos_x = self.pos_range[0] + (x_raw / 1000) * (self.pos_range[1] - self.pos_range[0])
-        self.pos_y = self.pos_range[0] + (y_raw / 1000) * (self.pos_range[1] - self.pos_range[0])
-        self.pos_z = self.pos_range[0] + (z_raw / 1000) * (self.pos_range[1] - self.pos_range[0])
+        self.pos_x = slider_to_pos(cv2.getTrackbarPos("X", self.window_name))
+        self.pos_y = slider_to_pos(cv2.getTrackbarPos("Y", self.window_name))
+        self.pos_z = slider_to_pos(cv2.getTrackbarPos("Z", self.window_name))
+        self.roll = cv2.getTrackbarPos("Roll", self.window_name) - 180
+        self.pitch = cv2.getTrackbarPos("Pitch", self.window_name) - 180
+        self.yaw = cv2.getTrackbarPos("Yaw", self.window_name) - 180
+        self.fovy = cv2.getTrackbarPos("FOV", self.window_name) + self.fov_range[0]
 
-        self.roll = cv2.getTrackbarPos("Roll (deg)", self.window_name) - 180
-        self.pitch = cv2.getTrackbarPos("Pitch (deg)", self.window_name) - 180
-        self.yaw = cv2.getTrackbarPos("Yaw (deg)", self.window_name) - 180
+    def render_wrist(self):
+        """Render from wrist camera (actual model camera attached to gripper body)."""
+        # Update camera pose in the model (local to parent body = gripper)
+        self.model.cam_pos[self.wrist_cam_id] = np.array([self.pos_x, self.pos_y, self.pos_z], dtype=float)
+        self.model.cam_quat[self.wrist_cam_id] = euler_to_quat(self.roll, self.pitch, self.yaw)
 
-        self.fovy = cv2.getTrackbarPos("FOV (deg)", self.window_name) + self.fov_range[0]
-
-    def euler_to_quat(self, roll, pitch, yaw):
-        """Convert euler angles (degrees) to quaternion [w, x, y, z]."""
-        r, p, y = np.radians([roll, pitch, yaw])
-        cr, sr = np.cos(r/2), np.sin(r/2)
-        cp, sp = np.cos(p/2), np.sin(p/2)
-        cy, sy = np.cos(y/2), np.sin(y/2)
-
-        w = cr * cp * cy + sr * sp * sy
-        x = sr * cp * cy - cr * sp * sy
-        y_q = cr * sp * cy + sr * cp * sy
-        z = cr * cp * sy - sr * sp * cy
-
-        return [w, x, y_q, z]
-
-    def render_wrist_camera(self):
-        """Render from the actual wrist camera, updating its position/orientation."""
-        # Update the camera parameters in the model directly
-        quat = self.euler_to_quat(self.roll, self.pitch, self.yaw)
-
-        # These are body-relative coordinates, MuJoCo handles the transform
-        self.model.cam_pos[self.wrist_cam_id] = [self.pos_x, self.pos_y, self.pos_z]
-        self.model.cam_quat[self.wrist_cam_id] = quat
-        self.model.cam_fovy[self.wrist_cam_id] = self.fovy
-
-        # Render from the actual wrist camera
-        self.wrist_renderer.update_scene(self.data, camera=self.wrist_cam_id)
+        # Render using the named camera from the model
+        self.wrist_renderer.update_scene(self.data, camera="wrist_cam")
         return self.wrist_renderer.render()
 
     def render_external(self):
@@ -150,63 +149,48 @@ class CameraAdjuster:
         return self.external_renderer.render()
 
     def get_xml_config(self):
-        """Get the XML camera element to paste into the scene file."""
-        quat = self.euler_to_quat(self.roll, self.pitch, self.yaw)
-        return f'''<camera name="wrist_cam" pos="{self.pos_x:.4f} {self.pos_y:.4f} {self.pos_z:.4f}" quat="{quat[0]:.4f} {quat[1]:.4f} {quat[2]:.4f} {quat[3]:.4f}" fovy="{self.fovy}"/>'''
+        """Get XML camera element."""
+        quat = euler_to_quat(self.roll, self.pitch, self.yaw)
+        return f'<camera name="wrist_cam" pos="{self.pos_x:.4f} {self.pos_y:.4f} {self.pos_z:.4f}" quat="{quat[0]:.4f} {quat[1]:.4f} {quat[2]:.4f} {quat[3]:.4f}" fovy="{self.fovy}"/>'
 
     def run(self):
-        """Main loop."""
         print("\n" + "="*60)
-        print("WRIST CAMERA ADJUSTMENT TOOL")
+        print("WRIST CAMERA ADJUSTMENT")
         print("="*60)
-        print("Controls:")
-        print("  - Sliders: Adjust position and orientation")
-        print("  - S: Print XML config to paste into scene file")
-        print("  - 1-4: Change arm pose")
-        print("  - Q/ESC: Quit")
+        print("Sliders: X/Y/Z position, Roll/Pitch/Yaw rotation, FOV")
+        print("Keys: S=Save XML | 1-4=Arm poses | Q=Quit")
         print("="*60 + "\n")
 
         arm_poses = [
-            [0.3, -0.5, 0.8, 0.5, 0.0, 0.5],   # Default reaching
-            [0.0, -0.3, 0.5, 0.3, 0.0, 0.8],   # More upright
-            [0.5, -0.7, 1.0, 0.8, 0.3, 0.2],   # Extended
-            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],    # Home
+            [0.3, -0.5, 0.8, 0.5, 0.0, 0.5],
+            [0.0, -0.3, 0.5, 0.3, 0.0, 0.8],
+            [0.5, -0.7, 1.0, 0.8, 0.3, 0.2],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         ]
 
         while True:
             self._read_trackbars()
 
-            # Render views
-            external = self.render_external()
-            wrist = self.render_wrist_camera()
+            # Render both views
+            external = cv2.cvtColor(self.render_external(), cv2.COLOR_RGB2BGR)
+            wrist = cv2.cvtColor(self.render_wrist(), cv2.COLOR_RGB2BGR)
 
-            # Convert to BGR for OpenCV
-            external_bgr = cv2.cvtColor(external, cv2.COLOR_RGB2BGR)
-            wrist_bgr = cv2.cvtColor(wrist, cv2.COLOR_RGB2BGR)
+            # Labels
+            cv2.putText(external, "External", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(wrist, "Wrist Camera", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-            # Add labels
-            cv2.putText(external_bgr, "External View", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(wrist_bgr, "Wrist Camera (Adjustable)", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
-            # Show current values on wrist view
-            info_lines = [
+            # Info on wrist view
+            info = [
                 f"pos: ({self.pos_x:.3f}, {self.pos_y:.3f}, {self.pos_z:.3f})",
-                f"euler: R={self.roll:.0f} P={self.pitch:.0f} Y={self.yaw:.0f}",
-                f"fovy: {self.fovy}",
+                f"rot: R={self.roll:.0f} P={self.pitch:.0f} Y={self.yaw:.0f}",
+                f"fov: {self.fovy}",
             ]
-            for i, line in enumerate(info_lines):
-                cv2.putText(wrist_bgr, line, (10, 60 + i*25),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            for i, line in enumerate(info):
+                cv2.putText(wrist, line, (10, 60 + i*22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-            # Combine views
-            display = np.hstack([external_bgr, wrist_bgr])
-
-            # Instructions
-            cv2.putText(display, "S=Print XML | Q=Quit | 1-4=Arm poses",
-                       (10, display.shape[0] - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+            display = np.hstack([external, wrist])
+            cv2.putText(display, "S=Print XML | Q=Quit | 1-4=Poses", (10, display.shape[0]-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
             cv2.imshow(self.window_name, display)
 
@@ -215,17 +199,15 @@ class CameraAdjuster:
                 break
             elif key == ord('s'):
                 print("\n" + "="*60)
-                print("COPY THIS INTO scenes/so101_with_wrist_cam.xml:")
+                print("COPY THIS INTO scenes/so101_with_wrist_cam.xml (line ~149):")
                 print("="*60)
                 print(self.get_xml_config())
                 print("="*60 + "\n")
             elif key in [ord('1'), ord('2'), ord('3'), ord('4')]:
-                pose_idx = key - ord('1')
-                self._set_arm_pose(arm_poses[pose_idx])
+                self._set_arm_pose(arm_poses[key - ord('1')])
 
         cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    adjuster = CameraAdjuster()
-    adjuster.run()
+    CameraAdjuster().run()
