@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 """
-Teleoperate the SO101 simulation using a physical leader arm.
+Teleoperate the SO101 simulation using a physical arm.
 
-Look at the sim output and move your leader arm to control the simulated robot.
+Look at the sim output and move your arm to control the simulated robot.
 Great for checking calibration matches between real and sim.
 
 Usage:
-    python teleop_sim.py
-    python teleop_sim.py --leader-port COM8 --fps 30
+    python teleop_sim.py                    # Use leader arm (default)
+    python teleop_sim.py --follower         # Use follower arm instead
+    python teleop_sim.py --port COM8 --fps 30
 """
 import argparse
 import json
@@ -87,38 +88,46 @@ def create_leader_bus(port: str):
     return bus
 
 
-def load_calibration(arm_id: str = "leader_so100"):
+def load_calibration(arm_id: str = "leader_so100", is_follower: bool = False):
     """Load calibration from JSON file."""
     import draccus
     from lerobot.motors import MotorCalibration
+    from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
 
-    calib_path = Path.home() / ".cache/huggingface/lerobot/calibration/teleoperators/so100_leader_sts3250" / f"{arm_id}.json"
+    if is_follower:
+        calib_path = HF_LEROBOT_CALIBRATION / "robots" / "so100_follower_sts3250" / f"{arm_id}.json"
+    else:
+        calib_path = HF_LEROBOT_CALIBRATION / "teleoperators" / "so100_leader_sts3250" / f"{arm_id}.json"
 
     if not calib_path.exists():
+        arm_type = "follower" if is_follower else "leader"
         raise FileNotFoundError(
             f"Calibration file not found: {calib_path}\n"
-            "Run 'python calibrate_from_zero.py --leader' first."
+            f"Run 'python calibrate_from_zero.py --{arm_type}' first."
         )
 
     with open(calib_path) as f, draccus.config_type("json"):
         return draccus.load(dict[str, MotorCalibration], f)
 
 
-def run_teleop(leader_port: str, fps: int = 30):
-    """Run teleoperation with physical leader arm controlling sim."""
+def run_teleop(port: str, fps: int = 30, is_follower: bool = False):
+    """Run teleoperation with physical arm controlling sim."""
 
-    # Create leader arm connection with STS3250 motors
-    print(f"Connecting to leader arm on {leader_port} (STS3250 motors)...")
-    bus = create_leader_bus(leader_port)
+    arm_type = "follower" if is_follower else "leader"
+    arm_id = "follower_so100" if is_follower else "leader_so100"
+
+    # Create arm connection with STS3250 motors
+    print(f"Connecting to {arm_type} arm on {port} (STS3250 motors)...")
+    bus = create_leader_bus(port)
     bus.connect()
 
     # Load calibration from JSON file (created by calibrate_from_zero.py)
     print("Loading calibration from file...")
-    bus.calibration = load_calibration()
+    bus.calibration = load_calibration(arm_id, is_follower)
 
-    # Disable torque so leader arm can be moved freely
+    # Disable torque so arm can be moved freely
     bus.disable_torque()
-    print("Leader arm connected!")
+    print(f"{arm_type.capitalize()} arm connected!")
 
     # Create simulation environment
     print("Creating SO101 simulation...")
@@ -130,9 +139,9 @@ def run_teleop(leader_port: str, fps: int = 30):
     cv2.resizeWindow("SO101 Teleop Sim", 800, 600)
 
     print(f"\nTeleoperation started at {fps} FPS")
-    print("Move your leader arm to control the simulation")
+    print(f"Move your {arm_type} arm to control the simulation")
     print("Press 'q' to quit, 'r' to reset")
-    print("Camera: arrow keys to rotate, +/- to zoom\n")
+    print("Camera: wasd to rotate/tilt, +/- to zoom\n")
 
     frame_time = 1.0 / fps
     step_count = 0
@@ -233,26 +242,36 @@ def run_teleop(leader_port: str, fps: int = 30):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Teleoperate SO101 sim with leader arm")
-    parser.add_argument("--leader-port", "-p", type=str, default=None,
-                        help="Serial port for leader arm (default: from config.json)")
+    parser = argparse.ArgumentParser(description="Teleoperate SO101 sim with physical arm")
+    parser.add_argument("--port", "-p", type=str, default=None,
+                        help="Serial port for arm (default: from config.json)")
+    parser.add_argument("--follower", "-F", action="store_true",
+                        help="Use follower arm instead of leader")
     parser.add_argument("--fps", "-f", type=int, default=30,
                         help="Target frame rate (default: 30)")
 
     args = parser.parse_args()
 
-    # Get leader port from config if not specified
-    leader_port = args.leader_port
-    if leader_port is None:
+    # Get port from config if not specified
+    port = args.port
+    if port is None:
         config = load_config()
-        if config and "leader" in config:
-            leader_port = config["leader"]["port"]
-            print(f"Using leader port from config: {leader_port}")
+        if args.follower:
+            if config and "follower" in config:
+                port = config["follower"]["port"]
+                print(f"Using follower port from config: {port}")
+            else:
+                port = "COM7"
+                print(f"No config found, using default follower port: {port}")
         else:
-            leader_port = "COM8"  # fallback default
-            print(f"No config found, using default: {leader_port}")
+            if config and "leader" in config:
+                port = config["leader"]["port"]
+                print(f"Using leader port from config: {port}")
+            else:
+                port = "COM8"
+                print(f"No config found, using default leader port: {port}")
 
-    run_teleop(leader_port, args.fps)
+    run_teleop(port, args.fps, args.follower)
 
 
 if __name__ == "__main__":
