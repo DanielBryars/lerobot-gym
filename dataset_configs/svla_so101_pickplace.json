@@ -1,0 +1,14 @@
+{
+    "description": "Config for lerobot/svla_so101_pickplace dataset",
+    "notes": "SmolVLA datasets are in degrees. shoulder_pan needs sign flip (LeRobot->URDF convention).",
+    "joint_mapping": {
+        "dataset_names": ["main_shoulder_pan", "main_shoulder_lift", "main_elbow_flex", "main_wrist_flex", "main_wrist_roll", "main_gripper"],
+        "sim_names": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"],
+        "order": [0, 1, 2, 3, 4, 5]
+    },
+    "transform": {
+        "unit": "degreesToRadians",
+        "scale": [-1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "offset": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    }
+}
