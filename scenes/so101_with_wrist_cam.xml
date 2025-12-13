@@ -11,7 +11,7 @@ Mesh files are referenced from the submodule.
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
     <rgba haze="0.15 0.25 0.35 1" />
-    <global azimuth="160" elevation="-20" />
+    <global azimuth="160" elevation="-20" offwidth="1920" offheight="1080"/>
   </visual>
 
   <default>
@@ -176,7 +176,7 @@ Mesh files are referenced from the submodule.
 
                 <!-- 1) Anchor -->
                 <body name="cam_anchor"
-                      pos="0 0 -0.04"
+                      pos="0 0 -0.045"
                       quat="1 0 0 0">
 
                   <!-- 2) Left/right correction (your Z 180° flip) -->
@@ -185,15 +185,15 @@ Mesh files are referenced from the submodule.
 
                     <!-- 3) Physical camera offset -->
                     <body name="cam_slide"
-                          pos="0.000 0.045 0.000">
+                          pos="0.000 0.039 -0.01">
 
                       <!-- 4) Pitch down to see the jaws -->
                       <body name="cam_pitch"
-                            axisangle="1 0 0 -0.3">
+                            axisangle="1 0 0 -0.7">
 
                         <camera name="wrist_cam"
                                 pos="0 0 0"
-                                fovy="75"/>
+                                fovy="71"/>
 
                         <!-- Visual representation of camera (camera looks along -Z) -->
                         <geom name="cam_body" type="box" size="0.008 0.012 0.006" pos="0 0 0.008"

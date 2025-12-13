@@ -1,0 +1,16 @@
+{
+  "ext_distance": 0.8,
+  "ext_azimuth": 95,
+  "ext_elevation": -19,
+  "ext_lookat_x": 0.278,
+  "ext_lookat_y": 0.43599999999999994,
+  "ext_lookat_z": 0.0,
+  "joint_pos": [
+    0.0,
+    0.0,
+    0.0,
+    0.009959999999999969,
+    1.5845000000000002,
+    -0.17
+  ]
+}

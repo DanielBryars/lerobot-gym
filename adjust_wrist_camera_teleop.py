@@ -26,10 +26,12 @@ import cv2
 import numpy as np
 import mujoco
 import time
+import json
 from pathlib import Path
 
 
 SCENE_XML = Path(__file__).parent / "scenes" / "so101_with_wrist_cam.xml"
+SETTINGS_FILE = Path(__file__).parent / ".wrist_camera_settings.json"
 AUTO_RELOAD_INTERVAL = 1.0  # seconds - check interval, only reloads if file changed
 
 # Joint limits (radians)
@@ -59,22 +61,66 @@ class WristCameraPreview:
         # Track file modification time
         self.last_mtime = SCENE_XML.stat().st_mtime
 
-        # Joint positions (start at zero)
+        # External camera settings (defaults)
+        self.ext_distance = 0.8
+        self.ext_azimuth = 120
+        self.ext_elevation = -25
+        self.ext_lookat_x = 0.0
+        self.ext_lookat_y = 0.0
+        self.ext_lookat_z = 0.1
+
+        # Joint positions (defaults)
         self.joint_pos = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.5])
+
+        # Load saved settings
+        self._load_settings()
         self.joint_step = 0.05  # radians per keypress
 
         # Apply initial joint positions
         self._apply_joints()
 
-        # Renderers
+        # Renderers (wrist camera matches real 1080p camera aspect ratio)
         self.external_renderer = mujoco.Renderer(self.model, height=480, width=640)
-        self.wrist_renderer = mujoco.Renderer(self.model, height=480, width=640)
+        self.wrist_renderer = mujoco.Renderer(self.model, height=1080, width=1920)
 
-        # Window
+        # Window (AUTOSIZE maintains aspect ratio)
         self.window_name = "Wrist Camera Preview"
-        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.window_name, 1300, 800)
+        cv2.namedWindow(self.window_name, cv2.WINDOW_AUTOSIZE)
         self._create_trackbars()
+
+    def _load_settings(self):
+        """Load settings from file if it exists."""
+        try:
+            if SETTINGS_FILE.exists():
+                with open(SETTINGS_FILE) as f:
+                    settings = json.load(f)
+                self.ext_distance = settings.get("ext_distance", self.ext_distance)
+                self.ext_azimuth = settings.get("ext_azimuth", self.ext_azimuth)
+                self.ext_elevation = settings.get("ext_elevation", self.ext_elevation)
+                self.ext_lookat_x = settings.get("ext_lookat_x", self.ext_lookat_x)
+                self.ext_lookat_y = settings.get("ext_lookat_y", self.ext_lookat_y)
+                self.ext_lookat_z = settings.get("ext_lookat_z", self.ext_lookat_z)
+                self.joint_pos = np.array(settings.get("joint_pos", self.joint_pos.tolist()))
+                print("Loaded saved settings.")
+        except Exception:
+            pass
+
+    def _save_settings(self):
+        """Save current settings to file."""
+        try:
+            settings = {
+                "ext_distance": self.ext_distance,
+                "ext_azimuth": self.ext_azimuth,
+                "ext_elevation": self.ext_elevation,
+                "ext_lookat_x": self.ext_lookat_x,
+                "ext_lookat_y": self.ext_lookat_y,
+                "ext_lookat_z": self.ext_lookat_z,
+                "joint_pos": self.joint_pos.tolist(),
+            }
+            with open(SETTINGS_FILE, "w") as f:
+                json.dump(settings, f, indent=2)
+        except Exception:
+            pass
 
     def _apply_joints(self):
         """Apply current joint positions to simulation."""
@@ -83,24 +129,56 @@ class WristCameraPreview:
             mujoco.mj_step(self.model, self.data)
 
     def _create_trackbars(self):
-        """Create trackbars for joint control."""
+        """Create trackbars for joint and external camera control."""
         def joint_to_slider(val, idx):
             lo, hi = JOINT_LIMITS[idx]
             return int((val - lo) / (hi - lo) * 1000)
 
-        # Joint trackbars only
+        # Joint trackbars
         for i, name in enumerate(JOINT_NAMES):
             cv2.createTrackbar(f"J{i+1}", self.window_name, joint_to_slider(self.joint_pos[i], i), 1000, lambda x: None)
 
+        # External camera trackbars
+        cv2.createTrackbar("Dist", self.window_name, int(self.ext_distance * 100), 300, lambda x: None)  # 0-3m
+        cv2.createTrackbar("Azi", self.window_name, int(self.ext_azimuth + 180), 360, lambda x: None)  # -180 to 180
+        cv2.createTrackbar("Elev", self.window_name, int(self.ext_elevation + 90), 180, lambda x: None)  # -90 to 90
+        cv2.createTrackbar("LookX", self.window_name, int((self.ext_lookat_x + 1) * 500), 1000, lambda x: None)  # -1 to 1
+        cv2.createTrackbar("LookY", self.window_name, int((self.ext_lookat_y + 1) * 500), 1000, lambda x: None)  # -1 to 1
+        cv2.createTrackbar("LookZ", self.window_name, int(self.ext_lookat_z * 500), 1000, lambda x: None)  # 0 to 2
+
     def _read_trackbars(self):
-        """Read trackbar values."""
+        """Read trackbar values and save if changed."""
         def slider_to_joint(val, idx):
             lo, hi = JOINT_LIMITS[idx]
             return lo + (val / 1000) * (hi - lo)
 
-        # Joints only
+        # Store old values to detect changes
+        old_values = (
+            self.ext_distance, self.ext_azimuth, self.ext_elevation,
+            self.ext_lookat_x, self.ext_lookat_y, self.ext_lookat_z,
+            tuple(self.joint_pos)
+        )
+
+        # Joints
         for i in range(6):
             self.joint_pos[i] = slider_to_joint(cv2.getTrackbarPos(f"J{i+1}", self.window_name), i)
+
+        # External camera
+        self.ext_distance = cv2.getTrackbarPos("Dist", self.window_name) / 100.0
+        self.ext_azimuth = cv2.getTrackbarPos("Azi", self.window_name) - 180
+        self.ext_elevation = cv2.getTrackbarPos("Elev", self.window_name) - 90
+        self.ext_lookat_x = cv2.getTrackbarPos("LookX", self.window_name) / 500.0 - 1.0
+        self.ext_lookat_y = cv2.getTrackbarPos("LookY", self.window_name) / 500.0 - 1.0
+        self.ext_lookat_z = cv2.getTrackbarPos("LookZ", self.window_name) / 500.0
+
+        # Check if changed and save
+        new_values = (
+            self.ext_distance, self.ext_azimuth, self.ext_elevation,
+            self.ext_lookat_x, self.ext_lookat_y, self.ext_lookat_z,
+            tuple(self.joint_pos)
+        )
+        if new_values != old_values:
+            self._save_settings()
 
     def _update_joint_sliders(self):
         """Update joint sliders to match current joint_pos (after keyboard input)."""
@@ -108,6 +186,7 @@ class WristCameraPreview:
             lo, hi = JOINT_LIMITS[i]
             slider_val = int((self.joint_pos[i] - lo) / (hi - lo) * 1000)
             cv2.setTrackbarPos(f"J{i+1}", self.window_name, slider_val)
+        self._save_settings()
 
     def _adjust_joint(self, idx, delta):
         """Adjust a joint by delta, respecting limits."""
@@ -123,9 +202,12 @@ class WristCameraPreview:
     def render_external(self):
         """Render external view."""
         cam = mujoco.MjvCamera()
-        cam.distance = 0.8
-        cam.azimuth = 120
-        cam.elevation = -25
+        cam.distance = self.ext_distance
+        cam.azimuth = self.ext_azimuth
+        cam.elevation = self.ext_elevation
+        cam.lookat[0] = self.ext_lookat_x
+        cam.lookat[1] = self.ext_lookat_y
+        cam.lookat[2] = self.ext_lookat_z
         self.external_renderer.update_scene(self.data, camera=cam)
         return self.external_renderer.render()
 
@@ -166,7 +248,7 @@ class WristCameraPreview:
 
             # Create new renderers
             self.external_renderer = mujoco.Renderer(self.model, height=480, width=640)
-            self.wrist_renderer = mujoco.Renderer(self.model, height=480, width=640)
+            self.wrist_renderer = mujoco.Renderer(self.model, height=1080, width=1920)
 
             print("XML reloaded!")
             return True
@@ -208,7 +290,9 @@ class WristCameraPreview:
 
             # Render
             external = cv2.cvtColor(self.render_external(), cv2.COLOR_RGB2BGR)
-            wrist = cv2.cvtColor(self.render_wrist(), cv2.COLOR_RGB2BGR)
+            wrist_full = cv2.cvtColor(self.render_wrist(), cv2.COLOR_RGB2BGR)
+            # Scale wrist view down to fit display (keep 16:9 aspect)
+            wrist = cv2.resize(wrist_full, (854, 480))
 
             # Labels
             cv2.putText(external, "External", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
