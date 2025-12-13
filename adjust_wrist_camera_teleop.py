@@ -1,14 +1,13 @@
 """
-Interactive wrist camera adjustment with arm teleoperation.
+Wrist camera preview with arm teleoperation.
 
-Adjust camera position/orientation while moving the arm around to see
-how the camera view looks in different configurations.
+View the wrist camera (as defined in XML) while moving the arm around.
+Edit the XML directly to adjust camera position/orientation.
 
 Usage:
     python adjust_wrist_camera_teleop.py
 
 Controls:
-    Camera: X/Y/Z position sliders, Roll/Pitch/Yaw rotation sliders
     Arm: Joint sliders (J1-J6) or keyboard controls
 
     Keyboard:
@@ -20,17 +19,18 @@ Controls:
         Y/H - Gripper open/close
 
         1-4 - Preset arm poses
-        P   - Print XML config
         ESC - Quit
 """
 
 import cv2
 import numpy as np
 import mujoco
+import time
 from pathlib import Path
 
 
 SCENE_XML = Path(__file__).parent / "scenes" / "so101_with_wrist_cam.xml"
+AUTO_RELOAD_INTERVAL = 1.0  # seconds - check interval, only reloads if file changed
 
 # Joint limits (radians)
 JOINT_LIMITS = [
@@ -45,42 +45,19 @@ JOINT_LIMITS = [
 JOINT_NAMES = ["Shoulder Pan", "Shoulder Lift", "Elbow Flex", "Wrist Flex", "Wrist Roll", "Gripper"]
 
 
-def euler_to_quat(roll, pitch, yaw):
-    """Convert euler angles (degrees) to quaternion [w, x, y, z]."""
-    r, p, y = np.radians([roll, pitch, yaw])
-    cr, sr = np.cos(r/2), np.sin(r/2)
-    cp, sp = np.cos(p/2), np.sin(p/2)
-    cy, sy = np.cos(y/2), np.sin(y/2)
-    w = cr * cp * cy + sr * sp * sy
-    x = sr * cp * cy - cr * sp * sy
-    y_q = cr * sp * cy + sr * cp * sy
-    z = cr * cp * sy - sr * sp * cy
-    return np.array([w, x, y_q, z])
-
-
-class CameraAdjusterTeleop:
+class WristCameraPreview:
     def __init__(self):
         print(f"Loading {SCENE_XML}...")
         self.model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
         self.data = mujoco.MjData(self.model)
 
-        self.gripper_body_id = mujoco.mj_name2id(
-            self.model, mujoco.mjtObj.mjOBJ_BODY, "gripper"
-        )
         self.wrist_cam_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
         )
         print(f"Wrist camera ID: {self.wrist_cam_id}")
 
-        # Camera params
-        self.pos_x = 0.0
-        self.pos_y = 0.0
-        self.pos_z = -0.05
-        self.roll = 0.0
-        self.pitch = 0.0
-        self.yaw = 0.0
-        self.fovy = 75
-        self.pos_range = (-0.15, 0.15)
+        # Track file modification time
+        self.last_mtime = SCENE_XML.stat().st_mtime
 
         # Joint positions (start at zero)
         self.joint_pos = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.5])
@@ -94,7 +71,7 @@ class CameraAdjusterTeleop:
         self.wrist_renderer = mujoco.Renderer(self.model, height=480, width=640)
 
         # Window
-        self.window_name = "Wrist Camera + Teleop"
+        self.window_name = "Wrist Camera Preview"
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(self.window_name, 1300, 800)
         self._create_trackbars()
@@ -106,44 +83,22 @@ class CameraAdjusterTeleop:
             mujoco.mj_step(self.model, self.data)
 
     def _create_trackbars(self):
-        """Create trackbars for camera and joints."""
-        def pos_to_slider(val):
-            return int((val - self.pos_range[0]) / (self.pos_range[1] - self.pos_range[0]) * 1000)
-
+        """Create trackbars for joint control."""
         def joint_to_slider(val, idx):
             lo, hi = JOINT_LIMITS[idx]
             return int((val - lo) / (hi - lo) * 1000)
 
-        # Camera trackbars
-        cv2.createTrackbar("Cam X", self.window_name, pos_to_slider(self.pos_x), 1000, lambda x: None)
-        cv2.createTrackbar("Cam Y", self.window_name, pos_to_slider(self.pos_y), 1000, lambda x: None)
-        cv2.createTrackbar("Cam Z", self.window_name, pos_to_slider(self.pos_z), 1000, lambda x: None)
-        cv2.createTrackbar("Roll", self.window_name, int(self.roll + 180), 360, lambda x: None)
-        cv2.createTrackbar("Pitch", self.window_name, int(self.pitch + 180), 360, lambda x: None)
-        cv2.createTrackbar("Yaw", self.window_name, int(self.yaw + 180), 360, lambda x: None)
-
-        # Joint trackbars
+        # Joint trackbars only
         for i, name in enumerate(JOINT_NAMES):
             cv2.createTrackbar(f"J{i+1}", self.window_name, joint_to_slider(self.joint_pos[i], i), 1000, lambda x: None)
 
     def _read_trackbars(self):
         """Read trackbar values."""
-        def slider_to_pos(val):
-            return self.pos_range[0] + (val / 1000) * (self.pos_range[1] - self.pos_range[0])
-
         def slider_to_joint(val, idx):
             lo, hi = JOINT_LIMITS[idx]
             return lo + (val / 1000) * (hi - lo)
 
-        # Camera
-        self.pos_x = slider_to_pos(cv2.getTrackbarPos("Cam X", self.window_name))
-        self.pos_y = slider_to_pos(cv2.getTrackbarPos("Cam Y", self.window_name))
-        self.pos_z = slider_to_pos(cv2.getTrackbarPos("Cam Z", self.window_name))
-        self.roll = cv2.getTrackbarPos("Roll", self.window_name) - 180
-        self.pitch = cv2.getTrackbarPos("Pitch", self.window_name) - 180
-        self.yaw = cv2.getTrackbarPos("Yaw", self.window_name) - 180
-
-        # Joints
+        # Joints only
         for i in range(6):
             self.joint_pos[i] = slider_to_joint(cv2.getTrackbarPos(f"J{i+1}", self.window_name), i)
 
@@ -161,12 +116,7 @@ class CameraAdjusterTeleop:
         self._update_joint_sliders()
 
     def render_wrist(self):
-        """Render from wrist camera (actual model camera attached to gripper body)."""
-        # Update camera pose in the model (local to parent body = gripper)
-        self.model.cam_pos[self.wrist_cam_id] = np.array([self.pos_x, self.pos_y, self.pos_z], dtype=float)
-        self.model.cam_quat[self.wrist_cam_id] = euler_to_quat(self.roll, self.pitch, self.yaw)
-
-        # Render using the named camera from the model
+        """Render from wrist camera exactly as defined in XML."""
         self.wrist_renderer.update_scene(self.data, camera="wrist_cam")
         return self.wrist_renderer.render()
 
@@ -179,20 +129,65 @@ class CameraAdjusterTeleop:
         self.external_renderer.update_scene(self.data, camera=cam)
         return self.external_renderer.render()
 
-    def get_xml_config(self):
-        """Get XML camera element."""
-        quat = euler_to_quat(self.roll, self.pitch, self.yaw)
-        return f'<camera name="wrist_cam" pos="{self.pos_x:.4f} {self.pos_y:.4f} {self.pos_z:.4f}" quat="{quat[0]:.4f} {quat[1]:.4f} {quat[2]:.4f} {quat[3]:.4f}" fovy="{self.fovy}"/>'
+    def reload_model_if_changed(self):
+        """Reload model from XML if file has changed. Returns True if reloaded."""
+        try:
+            # Check if file modified
+            current_mtime = SCENE_XML.stat().st_mtime
+            if current_mtime == self.last_mtime:
+                return False  # No change
+
+            saved_joints = self.joint_pos.copy()
+
+            # Try to reload model
+            new_model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
+            new_data = mujoco.MjData(new_model)
+
+            # Re-find camera
+            new_cam_id = mujoco.mj_name2id(
+                new_model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
+            )
+
+            # Close old renderers explicitly
+            del self.external_renderer
+            del self.wrist_renderer
+
+            # Success - swap in new model
+            self.model = new_model
+            self.data = new_data
+            self.wrist_cam_id = new_cam_id
+            self.last_mtime = current_mtime
+
+            # Restore joint positions and step simulation
+            self.joint_pos = saved_joints
+            self.data.ctrl[:] = self.joint_pos
+            for _ in range(50):  # More steps to stabilize
+                mujoco.mj_step(self.model, self.data)
+
+            # Create new renderers
+            self.external_renderer = mujoco.Renderer(self.model, height=480, width=640)
+            self.wrist_renderer = mujoco.Renderer(self.model, height=480, width=640)
+
+            print("XML reloaded!")
+            return True
+
+        except Exception as e:
+            # XML parse error or other issue - keep using old model
+            return False
 
     def run(self):
         print("\n" + "="*70)
-        print("WRIST CAMERA ADJUSTMENT + TELEOP")
+        print("WRIST CAMERA PREVIEW + TELEOP")
         print("="*70)
-        print("Camera: Sliders Cam X/Y/Z, Roll/Pitch/Yaw")
+        print("Camera renders exactly as defined in XML.")
+        print("Edit scenes/so101_with_wrist_cam.xml - auto-reloads every 1s.")
+        print("")
         print("Arm:    Sliders J1-J6 or keyboard:")
         print("        Q/A=J1  W/S=J2  E/D=J3  R/F=J4  T/G=J5  Y/H=J6")
-        print("        1-4=Preset poses  P=Print XML  ESC=Quit")
+        print("        1-4=Preset poses  ESC=Quit")
         print("="*70 + "\n")
+
+        last_reload_time = time.time()
 
         presets = [
             [0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
@@ -202,6 +197,12 @@ class CameraAdjusterTeleop:
         ]
 
         while True:
+            # Check for XML changes every 1 second
+            now = time.time()
+            if now - last_reload_time >= AUTO_RELOAD_INTERVAL:
+                self.reload_model_if_changed()
+                last_reload_time = now
+
             self._read_trackbars()
             self._apply_joints()
 
@@ -211,15 +212,7 @@ class CameraAdjusterTeleop:
 
             # Labels
             cv2.putText(external, "External", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(wrist, "Wrist Camera", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
-            # Camera info
-            info = [
-                f"cam: ({self.pos_x:.3f}, {self.pos_y:.3f}, {self.pos_z:.3f})",
-                f"rot: R={self.roll:.0f} P={self.pitch:.0f} Y={self.yaw:.0f}",
-            ]
-            for i, line in enumerate(info):
-                cv2.putText(wrist, line, (10, 60 + i*22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(wrist, "Wrist Camera (from XML)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
             # Joint info on external view
             joint_info = [f"J{i+1}: {np.degrees(self.joint_pos[i]):.1f}deg" for i in range(6)]
@@ -227,7 +220,7 @@ class CameraAdjusterTeleop:
                 cv2.putText(external, line, (10, 60 + i*20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
             display = np.hstack([external, wrist])
-            cv2.putText(display, "P=Print XML | 1-4=Presets | Q/A W/S E/D R/F T/G Y/H=Joint control | ESC=Quit",
+            cv2.putText(display, "Auto-reloads XML | 1-4=Presets | Q/A W/S E/D R/F T/G Y/H=Joints | ESC=Quit",
                        (10, display.shape[0]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
             cv2.imshow(self.window_name, display)
@@ -236,12 +229,6 @@ class CameraAdjusterTeleop:
 
             if key == 27:  # ESC
                 break
-            elif key == ord('p'):
-                print("\n" + "="*60)
-                print("COPY THIS INTO scenes/so101_with_wrist_cam.xml:")
-                print("="*60)
-                print(self.get_xml_config())
-                print("="*60 + "\n")
             # Preset poses
             elif key in [ord('1'), ord('2'), ord('3'), ord('4')]:
                 self.joint_pos = np.array(presets[key - ord('1')])
@@ -276,4 +263,4 @@ class CameraAdjusterTeleop:
 
 
 if __name__ == "__main__":
-    CameraAdjusterTeleop().run()
+    WristCameraPreview().run()
