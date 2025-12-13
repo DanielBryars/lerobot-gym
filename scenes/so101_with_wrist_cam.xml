@@ -80,6 +80,9 @@ Mesh files are referenced from the submodule.
     <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
     <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane" />
 
+    <!-- Overhead camera (Nuroum V11: 90° diagonal FOV -> ~52° vertical for 16:9) -->
+    <camera name="overhead_cam" pos="0.3 0 0.6" axisangle="0 0 1 -1.5708" fovy="52"/>
+
     <!-- Red cube for pick and place task -->
     <body name="cube" pos="0.2 0.0 0.025">
       <freejoint name="cube_joint"/>

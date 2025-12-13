@@ -56,7 +56,10 @@ class WristCameraPreview:
         self.wrist_cam_id = mujoco.mj_name2id(
             self.model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
         )
-        print(f"Wrist camera ID: {self.wrist_cam_id}")
+        self.overhead_cam_id = mujoco.mj_name2id(
+            self.model, mujoco.mjtObj.mjOBJ_CAMERA, "overhead_cam"
+        )
+        print(f"Wrist camera ID: {self.wrist_cam_id}, Overhead camera ID: {self.overhead_cam_id}")
 
         # Track file modification time
         self.last_mtime = SCENE_XML.stat().st_mtime
@@ -79,9 +82,10 @@ class WristCameraPreview:
         # Apply initial joint positions
         self._apply_joints()
 
-        # Renderers (wrist camera matches real 1080p camera aspect ratio)
+        # Renderers (wrist and overhead cameras match real 1080p camera aspect ratio)
         self.external_renderer = mujoco.Renderer(self.model, height=480, width=640)
         self.wrist_renderer = mujoco.Renderer(self.model, height=1080, width=1920)
+        self.overhead_renderer = mujoco.Renderer(self.model, height=1080, width=1920)
 
         # Window (AUTOSIZE maintains aspect ratio)
         self.window_name = "Wrist Camera Preview"
@@ -199,6 +203,11 @@ class WristCameraPreview:
         self.wrist_renderer.update_scene(self.data, camera="wrist_cam")
         return self.wrist_renderer.render()
 
+    def render_overhead(self):
+        """Render from overhead camera exactly as defined in XML."""
+        self.overhead_renderer.update_scene(self.data, camera="overhead_cam")
+        return self.overhead_renderer.render()
+
     def render_external(self):
         """Render external view."""
         cam = mujoco.MjvCamera()
@@ -225,19 +234,24 @@ class WristCameraPreview:
             new_model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
             new_data = mujoco.MjData(new_model)
 
-            # Re-find camera
-            new_cam_id = mujoco.mj_name2id(
+            # Re-find cameras
+            new_wrist_cam_id = mujoco.mj_name2id(
                 new_model, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam"
+            )
+            new_overhead_cam_id = mujoco.mj_name2id(
+                new_model, mujoco.mjtObj.mjOBJ_CAMERA, "overhead_cam"
             )
 
             # Close old renderers explicitly
             del self.external_renderer
             del self.wrist_renderer
+            del self.overhead_renderer
 
             # Success - swap in new model
             self.model = new_model
             self.data = new_data
-            self.wrist_cam_id = new_cam_id
+            self.wrist_cam_id = new_wrist_cam_id
+            self.overhead_cam_id = new_overhead_cam_id
             self.last_mtime = current_mtime
 
             # Restore joint positions and step simulation
@@ -249,6 +263,7 @@ class WristCameraPreview:
             # Create new renderers
             self.external_renderer = mujoco.Renderer(self.model, height=480, width=640)
             self.wrist_renderer = mujoco.Renderer(self.model, height=1080, width=1920)
+            self.overhead_renderer = mujoco.Renderer(self.model, height=1080, width=1920)
 
             print("XML reloaded!")
             return True
@@ -288,22 +303,32 @@ class WristCameraPreview:
             self._read_trackbars()
             self._apply_joints()
 
-            # Render
+            # Render all cameras
             external = cv2.cvtColor(self.render_external(), cv2.COLOR_RGB2BGR)
             wrist_full = cv2.cvtColor(self.render_wrist(), cv2.COLOR_RGB2BGR)
-            # Scale wrist view down to fit display (keep 16:9 aspect)
-            wrist = cv2.resize(wrist_full, (854, 480))
+            overhead_full = cv2.cvtColor(self.render_overhead(), cv2.COLOR_RGB2BGR)
+
+            # Scale cameras to fit display (keep 16:9 for wrist/overhead)
+            wrist = cv2.resize(wrist_full, (640, 360))
+            overhead = cv2.resize(overhead_full, (640, 360))
 
             # Labels
             cv2.putText(external, "External", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-            cv2.putText(wrist, "Wrist Camera (from XML)", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(wrist, "Wrist Cam", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(overhead, "Overhead Cam", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
             # Joint info on external view
             joint_info = [f"J{i+1}: {np.degrees(self.joint_pos[i]):.1f}deg" for i in range(6)]
             for i, line in enumerate(joint_info):
                 cv2.putText(external, line, (10, 60 + i*20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
-            display = np.hstack([external, wrist])
+            # Layout: External on left, wrist+overhead stacked on right
+            right_col = np.vstack([wrist, overhead])  # 640x720
+            # Pad external to match height (480 -> 720)
+            external_padded = np.zeros((720, 640, 3), dtype=np.uint8)
+            external_padded[:480, :, :] = external
+
+            display = np.hstack([external_padded, right_col])
             cv2.putText(display, "Auto-reloads XML | 1-4=Presets | Q/A W/S E/D R/F T/G Y/H=Joints | ESC=Quit",
                        (10, display.shape[0]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
 
