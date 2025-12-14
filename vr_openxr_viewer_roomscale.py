@@ -297,9 +297,10 @@ class MuJoCoVRViewer:
         quat = view.pose.orientation
 
         # Base position in MuJoCo world (VR origin). Adjust to place yourself in the scene.
-        # For STAGE (roomscale): Y=0 is floor, standing head ~1.6m
-        # We want to be looking at the robot from a comfortable standing height
-        base_pos = np.array([0.4, 0.3, 0.4], dtype=np.float64)
+        # For STAGE (roomscale): Y=0 is floor, standing head ~1.2-1.6m
+        # Robot is at Z≈0.1m. We want standing eye level at Z≈0.5m (comfortable table height)
+        # So: base_pos[2] + XR_Y = 0.5 → base_pos[2] = 0.5 - 1.4 = -0.9
+        base_pos = np.array([0.4, 0.3, -0.9], dtype=np.float64)
 
         # Eye position in MuJoCo coordinates
         xr_pos = np.array([pos.x, pos.y, pos.z])
@@ -314,15 +315,20 @@ class MuJoCoVRViewer:
                 print(f"XR pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]")
                 print(f"MJ eye_pos: [{eye_pos_mj[0]:.2f}, {eye_pos_mj[1]:.2f}, {eye_pos_mj[2]:.2f}]")
 
-        # Forward and up vectors from OpenXR quaternion
-        fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])  # OpenXR forward is -Z
-        up_xr  = self.quat_rotate(quat, [0.0, 1.0,  0.0])  # OpenXR up is +Y
+        # Forward, up, and right vectors from OpenXR quaternion
+        fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])   # OpenXR forward is -Z
+        up_xr  = self.quat_rotate(quat, [0.0, 1.0,  0.0])   # OpenXR up is +Y
+        right_xr = self.quat_rotate(quat, [1.0, 0.0, 0.0])  # OpenXR right is +X
 
         # Convert to MuJoCo coordinates
         fwd_mj = self.xr_to_mj(fwd_xr)
-        up_mj  = self.xr_to_mj(up_xr)
+        right_mj = self.xr_to_mj(right_xr)
         fwd_mj = fwd_mj / (np.linalg.norm(fwd_mj) + 1e-12)
-        up_mj  = up_mj / (np.linalg.norm(up_mj) + 1e-12)
+        right_mj = right_mj / (np.linalg.norm(right_mj) + 1e-12)
+
+        # Compute up from cross product to ensure correct handedness
+        up_mj = np.cross(right_mj, fwd_mj)
+        up_mj = up_mj / (np.linalg.norm(up_mj) + 1e-12)
 
         # Use a temporary MjvCamera for mjv_updateScene (it populates the scene geoms)
         # Must match fusion_fix.py approach for consistent behavior
@@ -349,6 +355,10 @@ class MuJoCoVRViewer:
         self.mj_scene.camera[0].pos[:] = eye_pos_mj
         self.mj_scene.camera[0].forward[:] = fwd_mj
         self.mj_scene.camera[0].up[:] = up_mj
+
+        # DEBUG: Test if MuJoCo uses our up vector at all
+        # Uncomment the next line to force world-up and see if roll works
+        # self.mj_scene.camera[0].up[:] = [0, 0, 1]  # Force world-up (no roll)
 
         # Debug: print what we actually set
         if eye_idx == 0 and hasattr(self, '_debug_frame') and self._debug_frame % 120 == 1:
