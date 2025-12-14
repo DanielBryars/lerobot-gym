@@ -237,9 +237,30 @@ class VRRenderer:
         )
         self.recenter_action = xr.create_action(self.action_set, recenter_info)
 
+        # Right thumbstick X (left/right strafe) - only for right hand
+        right_x_info = xr.ActionCreateInfo(
+            action_name="right_thumbstick_x",
+            action_type=xr.ActionType.FLOAT_INPUT,
+            count_subaction_paths=1,
+            subaction_paths=[self.hand_paths[1]],  # Right hand only
+            localized_action_name="Right Thumbstick X",
+        )
+        self.right_thumbstick_x_action = xr.create_action(self.action_set, right_x_info)
+
+        # Right thumbstick Y (up/down) - only for right hand
+        right_y_info = xr.ActionCreateInfo(
+            action_name="right_thumbstick_y",
+            action_type=xr.ActionType.FLOAT_INPUT,
+            count_subaction_paths=1,
+            subaction_paths=[self.hand_paths[1]],  # Right hand only
+            localized_action_name="Right Thumbstick Y",
+        )
+        self.right_thumbstick_y_action = xr.create_action(self.action_set, right_y_info)
+
         # Suggest bindings for Oculus Touch controllers
         oculus_path = xr.string_to_path(self.instance, "/interaction_profiles/oculus/touch_controller")
         bindings = [
+            # Left thumbstick: forward/back, left/right
             xr.ActionSuggestedBinding(
                 self.thumbstick_x_action,
                 xr.string_to_path(self.instance, "/user/hand/left/input/thumbstick/x"),
@@ -248,6 +269,16 @@ class VRRenderer:
                 self.thumbstick_y_action,
                 xr.string_to_path(self.instance, "/user/hand/left/input/thumbstick/y"),
             ),
+            # Right thumbstick: strafe, up/down
+            xr.ActionSuggestedBinding(
+                self.right_thumbstick_x_action,
+                xr.string_to_path(self.instance, "/user/hand/right/input/thumbstick/x"),
+            ),
+            xr.ActionSuggestedBinding(
+                self.right_thumbstick_y_action,
+                xr.string_to_path(self.instance, "/user/hand/right/input/thumbstick/y"),
+            ),
+            # A button: recenter
             xr.ActionSuggestedBinding(
                 self.recenter_action,
                 xr.string_to_path(self.instance, "/user/hand/right/input/a/click"),
@@ -270,6 +301,9 @@ class VRRenderer:
         print("Controller actions initialized (left stick = move, A = recenter)")
 
     def _init_swapchains(self):
+        # Ensure our context is current before creating FBOs
+        glfw.make_context_current(self.window)
+
         swapchain_formats = xr.enumerate_swapchain_formats(self.session)
         chosen_format = GL.GL_SRGB8_ALPHA8 if GL.GL_SRGB8_ALPHA8 in swapchain_formats else swapchain_formats[0]
 
@@ -446,6 +480,24 @@ class VRRenderer:
         except:
             pass
 
+        # Right thumbstick X (additional left/right strafe)
+        try:
+            state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_x_action, subaction_path=xr.NULL_PATH)
+            state = xr.get_action_state_float(self.session, state_info)
+            if state.is_active and abs(state.current_state) > 0.1:
+                self.base_pos[1] -= state.current_state * move_speed  # Left/right
+        except Exception as e:
+            pass
+
+        # Right thumbstick Y (up/down in MuJoCo = Z axis)
+        try:
+            state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_y_action, subaction_path=xr.NULL_PATH)
+            state = xr.get_action_state_float(self.session, state_info)
+            if state.is_active and abs(state.current_state) > 0.1:
+                self.base_pos[2] += state.current_state * move_speed  # Up/down
+        except Exception as e:
+            pass
+
         # Get recenter button (A on right controller)
         try:
             state_info = xr.ActionStateGetInfo(action=self.recenter_action, subaction_path=self.hand_paths[1])
@@ -472,6 +524,9 @@ class VRRenderer:
 
     def render_frame(self):
         """Render one VR frame. Returns False if should exit."""
+        # Ensure our GL context is current (may have been changed by other code)
+        glfw.make_context_current(self.window)
+
         glfw.poll_events()
         if glfw.window_should_close(self.window):
             return False
@@ -595,7 +650,8 @@ def run_teleop_vr(port: str, fps: int = 30):
     print("Move leader arm to control the simulation")
     print("")
     print("Controller Controls:")
-    print("  Left Thumbstick: Move scene (forward/back, left/right)")
+    print("  Left Thumbstick:  Forward/back (Y), Left/right (X)")
+    print("  Right Thumbstick: Up/down (Y), Strafe left/right (X)")
     print("  A Button (right): Recenter robot in front of you")
     print("")
     print("Press Ctrl+C to exit")
@@ -633,10 +689,15 @@ def run_teleop_vr(port: str, fps: int = 30):
             if not vr.render_frame():
                 break
 
-            # Print status periodically
+            # Print status periodically with position debug info
             if step_count % 100 == 0:
                 elapsed = time.time() - loop_start
+                actual_qpos = mj_data.qpos[:6]
                 print(f"Step: {step_count}, FPS: {1/elapsed:.1f}")
+                print(f"  Normalized:  [{normalized[0]:6.1f}, {normalized[1]:6.1f}, {normalized[2]:6.1f}, {normalized[3]:6.1f}, {normalized[4]:6.1f}, {normalized[5]:5.1f}]")
+                print(f"  Target rad:  [{joint_radians[0]:6.3f}, {joint_radians[1]:6.3f}, {joint_radians[2]:6.3f}, {joint_radians[3]:6.3f}, {joint_radians[4]:6.3f}, {joint_radians[5]:6.3f}]")
+                print(f"  Actual qpos: [{actual_qpos[0]:6.3f}, {actual_qpos[1]:6.3f}, {actual_qpos[2]:6.3f}, {actual_qpos[3]:6.3f}, {actual_qpos[4]:6.3f}, {actual_qpos[5]:6.3f}]")
+                print(f"  VR pos: [{vr.base_pos[0]:.2f}, {vr.base_pos[1]:.2f}, {vr.base_pos[2]:.2f}]")
 
             # Maintain frame rate
             elapsed = time.time() - loop_start
@@ -651,14 +712,78 @@ def run_teleop_vr(port: str, fps: int = 30):
         print("Done.")
 
 
+def run_vr_test(fps: int = 30):
+    """Run VR test mode without physical arm - just view the scene and test controllers."""
+
+    # Load MuJoCo model
+    print("Loading MuJoCo model...")
+    scene_xml = Path(__file__).parent / "scenes" / "so101_with_wrist_cam.xml"
+    mj_model = mujoco.MjModel.from_xml_path(str(scene_xml))
+    mj_data = mujoco.MjData(mj_model)
+
+    # Initialize simulation to rest position
+    for _ in range(100):
+        mujoco.mj_step(mj_model, mj_data)
+
+    # Create VR renderer
+    print("Initializing VR...")
+    vr = VRRenderer(mj_model, mj_data)
+    vr.init_all()
+
+    print("\n" + "="*50)
+    print("VR Test Mode (no arm required)")
+    print("")
+    print("Controller Controls:")
+    print("  Left Thumbstick:  Forward/back (Y), Left/right (X)")
+    print("  Right Thumbstick: Up/down (Y), Strafe left/right (X)")
+    print("  A Button (right): Recenter robot in front of you")
+    print("")
+    print("Press Ctrl+C to exit")
+    print("="*50 + "\n")
+
+    frame_time = 1.0 / fps
+    step_count = 0
+
+    try:
+        while True:
+            loop_start = time.time()
+            step_count += 1
+
+            # Render to VR
+            if not vr.render_frame():
+                break
+
+            # Print status periodically
+            if step_count % 100 == 0:
+                elapsed = time.time() - loop_start
+                print(f"Step: {step_count}, FPS: {1/elapsed:.1f}, VR pos: [{vr.base_pos[0]:.2f}, {vr.base_pos[1]:.2f}, {vr.base_pos[2]:.2f}]")
+
+            # Maintain frame rate
+            elapsed = time.time() - loop_start
+            if elapsed < frame_time:
+                time.sleep(frame_time - elapsed)
+
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    finally:
+        vr.cleanup()
+        print("Done.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="VR Teleop for SO101 sim")
     parser.add_argument("--port", "-p", type=str, default=None,
                         help="Serial port for leader arm (default: from config.json)")
     parser.add_argument("--fps", "-f", type=int, default=30,
                         help="Target frame rate (default: 30)")
+    parser.add_argument("--test", "-t", action="store_true",
+                        help="Test mode: VR only, no arm required")
 
     args = parser.parse_args()
+
+    if args.test:
+        run_vr_test(args.fps)
+        return
 
     port = args.port
     if port is None:
