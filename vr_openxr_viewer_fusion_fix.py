@@ -19,7 +19,6 @@ import ctypes
 import numpy as np
 import mujoco
 from pathlib import Path
-from xr.utils import Matrix4x4f, GraphicsAPI
 
 try:
     import xr
@@ -279,18 +278,15 @@ class MuJoCoVRViewer:
         return v + w * t + np.cross(qv, t)
 
     def xr_to_mj(self, v):
-        """Convert a vector from OpenXR coords to MuJoCo coords.
-
-        OpenXR: +X right, +Y up, -Z forward (right-handed)
-        MuJoCo: +X forward, +Y left, +Z up (right-handed)
-        """
+        """Convert vector from OpenXR (+X right, +Y up, -Z forward) to MuJoCo (+X forward, +Y left, +Z up)."""
         v = np.array(v, dtype=np.float64)
         return np.array([-v[2], -v[0], v[1]], dtype=np.float64)
 
     def render_eye(self, eye_idx, view, fbo, width, height):
-        """Render scene for one eye using the OpenXR eye pose."""
+        """Render scene for one eye using the OpenXR eye pose + asymmetric FOV."""
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
         GL.glViewport(0, 0, width, height)
+        GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glClearColor(0.2, 0.3, 0.4, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
@@ -306,50 +302,56 @@ class MuJoCoVRViewer:
 
         # Forward and up vectors from OpenXR quaternion
         fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])  # OpenXR forward is -Z
-        up_xr = self.quat_rotate(quat, [0.0, 1.0, 0.0])    # OpenXR up is +Y
+        up_xr  = self.quat_rotate(quat, [0.0, 1.0,  0.0])  # OpenXR up is +Y
 
         # Convert to MuJoCo coordinates
         fwd_mj = self.xr_to_mj(fwd_xr)
-        up_mj = self.xr_to_mj(up_xr)
+        up_mj  = self.xr_to_mj(up_xr)
         fwd_mj = fwd_mj / (np.linalg.norm(fwd_mj) + 1e-12)
-        up_mj = up_mj / (np.linalg.norm(up_mj) + 1e-12)
+        up_mj  = up_mj / (np.linalg.norm(up_mj) + 1e-12)
 
-        # Use a simple camera for mjv_updateScene (it updates geometry)
+        # Use a temporary MjvCamera for mjv_updateScene (it populates the scene geoms)
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-        cam.lookat[:] = eye_pos_mj + fwd_mj * 0.5
-        cam.distance = 0.5
-        cam.azimuth = 0
-        cam.elevation = 0
 
-        # Update scene geometry
+        # Choose a focus distance (metres). 1.0 tends to be comfortable.
+        dist = 1.0
+        cam.lookat[:] = eye_pos_mj + fwd_mj * dist
+        cam.distance = dist
+
+        # Derive azimuth/elevation from forward direction (MuJoCo uses azimuth about +Z; +Y is left)
+        cam.azimuth = np.degrees(np.arctan2(fwd_mj[1], fwd_mj[0]))
+        cam.elevation = -np.degrees(np.arctan2(fwd_mj[2], np.sqrt(fwd_mj[0]**2 + fwd_mj[1]**2)))
+
         mujoco.mjv_updateScene(
             self.model, self.data, self.mj_option, None,
             cam, mujoco.mjtCatBit.mjCAT_ALL, self.mj_scene
         )
 
-        # NOW set MuJoCo scene camera directly AFTER updateScene
-        # (updateScene overwrites camera, so we set it after)
+        # Override the actual render camera pose (mjv_updateScene may overwrite it)
         self.mj_scene.camera[0].pos[:] = eye_pos_mj
         self.mj_scene.camera[0].forward[:] = fwd_mj
         self.mj_scene.camera[0].up[:] = up_mj
 
-        # Set frustum from OpenXR FOV (asymmetric!)
+        # Set an *asymmetric* frustum from OpenXR FOV.
+        # OpenXR fov angles are radians about the view axis.
         fov = view.fov
         near = 0.05
         far = 50.0
 
-        # Compute frustum dimensions at near plane
-        # OpenXR FOV angles are from the view axis
-        left = near * np.tan(fov.angle_left)    # negative
-        right = near * np.tan(fov.angle_right)  # positive
-        bottom = near * np.tan(fov.angle_down)  # negative
-        top = near * np.tan(fov.angle_up)       # positive
+        left   = near * np.tan(fov.angle_left)   # typically negative
+        right  = near * np.tan(fov.angle_right)  # typically positive
+        bottom = near * np.tan(fov.angle_down)   # typically negative
+        top    = near * np.tan(fov.angle_up)     # typically positive
+
+        # MuJoCo camera frustum params encode left/right via center+width.
+        center = (left + right) / 2.0
+        half_width = (right - left) / 2.0
 
         self.mj_scene.camera[0].frustum_near = near
         self.mj_scene.camera[0].frustum_far = far
-        self.mj_scene.camera[0].frustum_center = 0.0  # 0 for perspective
-        self.mj_scene.camera[0].frustum_width = (right - left) / 2  # half-width
+        self.mj_scene.camera[0].frustum_center = center
+        self.mj_scene.camera[0].frustum_width = half_width
         self.mj_scene.camera[0].frustum_bottom = bottom
         self.mj_scene.camera[0].frustum_top = top
 
