@@ -118,14 +118,23 @@ class VRRenderer:
         self.reference_space = None
         self.running = True
 
+        # Controller input
+        self.action_set = None
+        self.thumbstick_x_action = None
+        self.thumbstick_y_action = None
+        self.recenter_action = None
+        self.hand_paths = []
+
         # Scene positioning (MuJoCo coords)
         self.base_pos = np.array([0.4, 0.3, -0.9], dtype=np.float64)
+        self.last_head_pos = None
 
     def init_all(self):
         """Initialize GLFW, OpenXR, and MuJoCo rendering."""
         self._init_glfw()
         self._init_openxr()
         self._init_session()
+        self._init_actions()
         self._init_swapchains()
         self._init_mujoco_rendering()
         self._init_reference_space()
@@ -181,6 +190,84 @@ class VRRenderer:
             next=ctypes.cast(ctypes.pointer(graphics_binding), ctypes.c_void_p),
         )
         self.session = xr.create_session(self.instance, session_create_info)
+
+    def _init_actions(self):
+        """Initialize OpenXR controller actions for scene movement."""
+        # Create action set
+        action_set_info = xr.ActionSetCreateInfo(
+            action_set_name="scene_control",
+            localized_action_set_name="Scene Control",
+            priority=0,
+        )
+        self.action_set = xr.create_action_set(self.instance, action_set_info)
+
+        # Get hand paths
+        self.hand_paths = [
+            xr.string_to_path(self.instance, "/user/hand/left"),
+            xr.string_to_path(self.instance, "/user/hand/right"),
+        ]
+
+        # Create thumbstick X action (left/right movement)
+        thumbstick_x_info = xr.ActionCreateInfo(
+            action_name="thumbstick_x",
+            action_type=xr.ActionType.FLOAT_INPUT,
+            count_subaction_paths=len(self.hand_paths),
+            subaction_paths=self.hand_paths,
+            localized_action_name="Thumbstick X",
+        )
+        self.thumbstick_x_action = xr.create_action(self.action_set, thumbstick_x_info)
+
+        # Create thumbstick Y action (forward/back movement)
+        thumbstick_y_info = xr.ActionCreateInfo(
+            action_name="thumbstick_y",
+            action_type=xr.ActionType.FLOAT_INPUT,
+            count_subaction_paths=len(self.hand_paths),
+            subaction_paths=self.hand_paths,
+            localized_action_name="Thumbstick Y",
+        )
+        self.thumbstick_y_action = xr.create_action(self.action_set, thumbstick_y_info)
+
+        # Create recenter action (button press)
+        recenter_info = xr.ActionCreateInfo(
+            action_name="recenter",
+            action_type=xr.ActionType.BOOLEAN_INPUT,
+            count_subaction_paths=len(self.hand_paths),
+            subaction_paths=self.hand_paths,
+            localized_action_name="Recenter Scene",
+        )
+        self.recenter_action = xr.create_action(self.action_set, recenter_info)
+
+        # Suggest bindings for Oculus Touch controllers
+        oculus_path = xr.string_to_path(self.instance, "/interaction_profiles/oculus/touch_controller")
+        bindings = [
+            xr.ActionSuggestedBinding(
+                self.thumbstick_x_action,
+                xr.string_to_path(self.instance, "/user/hand/left/input/thumbstick/x"),
+            ),
+            xr.ActionSuggestedBinding(
+                self.thumbstick_y_action,
+                xr.string_to_path(self.instance, "/user/hand/left/input/thumbstick/y"),
+            ),
+            xr.ActionSuggestedBinding(
+                self.recenter_action,
+                xr.string_to_path(self.instance, "/user/hand/right/input/a/click"),
+            ),
+        ]
+
+        suggested_bindings = xr.InteractionProfileSuggestedBinding(
+            interaction_profile=oculus_path,
+            suggested_bindings=bindings,
+        )
+        try:
+            xr.suggest_interaction_profile_bindings(self.instance, suggested_bindings)
+        except Exception as e:
+            print(f"Warning: Could not bind Oculus Touch profile: {e}")
+
+        # Attach action set to session
+        attach_info = xr.SessionActionSetsAttachInfo(action_sets=[self.action_set])
+        xr.attach_session_action_sets(self.session, attach_info)
+
+        print("Controller actions initialized (left stick = move, A = recenter)")
 
     def _init_swapchains(self):
         swapchain_formats = xr.enumerate_swapchain_formats(self.session)
@@ -325,6 +412,64 @@ class VRRenderer:
         viewport = mujoco.MjrRect(0, 0, width, height)
         mujoco.mjr_render(viewport, self.mj_scene, self.mj_context)
 
+    def _handle_controller_input(self, display_time):
+        """Poll controller actions and update scene position."""
+        if self.action_set is None:
+            return
+
+        # Sync actions
+        active_action_set = xr.ActiveActionSet(action_set=self.action_set, subaction_path=xr.NULL_PATH)
+        sync_info = xr.ActionsSyncInfo(active_action_sets=[active_action_set])
+        try:
+            xr.sync_actions(self.session, sync_info)
+        except:
+            return
+
+        # Movement speed
+        move_speed = 0.02  # meters per frame
+
+        # Get thumbstick X (left/right in MuJoCo = Y axis)
+        try:
+            state_info = xr.ActionStateGetInfo(action=self.thumbstick_x_action, subaction_path=self.hand_paths[0])
+            state = xr.get_action_state_float(self.session, state_info)
+            if state.is_active and abs(state.current_state) > 0.1:
+                self.base_pos[1] -= state.current_state * move_speed  # Left/right
+        except:
+            pass
+
+        # Get thumbstick Y (forward/back in MuJoCo = X axis)
+        try:
+            state_info = xr.ActionStateGetInfo(action=self.thumbstick_y_action, subaction_path=self.hand_paths[0])
+            state = xr.get_action_state_float(self.session, state_info)
+            if state.is_active and abs(state.current_state) > 0.1:
+                self.base_pos[0] += state.current_state * move_speed  # Forward/back
+        except:
+            pass
+
+        # Get recenter button (A on right controller)
+        try:
+            state_info = xr.ActionStateGetInfo(action=self.recenter_action, subaction_path=self.hand_paths[1])
+            state = xr.get_action_state_boolean(self.session, state_info)
+            if state.is_active and state.current_state and state.changed_since_last_sync:
+                self._recenter_scene()
+        except:
+            pass
+
+    def _recenter_scene(self):
+        """Move scene so robot is in front of current head position."""
+        if self.last_head_pos is None:
+            return
+
+        # Convert head position to MuJoCo coordinates
+        head_mj = self.xr_to_mj(self.last_head_pos)
+
+        # Place robot 0.5m in front of head at table height
+        robot_pos = np.array([0.1, 0.0, 0.1])  # Robot origin in MuJoCo
+        desired_offset = np.array([0.5, 0.0, 0.0])  # 0.5m in front
+
+        self.base_pos = robot_pos - head_mj - desired_offset
+        print(f"Scene recentered! base_pos: [{self.base_pos[0]:.2f}, {self.base_pos[1]:.2f}, {self.base_pos[2]:.2f}]")
+
     def render_frame(self):
         """Render one VR frame. Returns False if should exit."""
         glfw.poll_events()
@@ -356,6 +501,14 @@ class VRRenderer:
             space=self.reference_space,
         )
         view_state, views = xr.locate_views(self.session, view_locate_info)
+
+        # Store head position for recentering (from left eye, roughly center)
+        if len(views) > 0:
+            pos = views[0].pose.position
+            self.last_head_pos = np.array([pos.x, pos.y, pos.z])
+
+        # Poll controller input
+        self._handle_controller_input(frame_state.predicted_display_time)
 
         # Render each eye
         projection_views = []
@@ -440,6 +593,11 @@ def run_teleop_vr(port: str, fps: int = 30):
     print("\n" + "="*50)
     print("VR Teleop Started!")
     print("Move leader arm to control the simulation")
+    print("")
+    print("Controller Controls:")
+    print("  Left Thumbstick: Move scene (forward/back, left/right)")
+    print("  A Button (right): Recenter robot in front of you")
+    print("")
     print("Press Ctrl+C to exit")
     print("="*50 + "\n")
 
