@@ -60,6 +60,8 @@ class MuJoCoVRViewer:
         self.mj_context = None
         self.mj_camera = mujoco.MjvCamera()
         self.mj_option = mujoco.MjvOption()
+        # Offset between XR space (right/up/-forward) and MuJoCo scene origin to place the robot under the user.
+        self.stage_offset_xr = xr.Vector3f(-0.3, -0.8, -0.3)
 
         # Default camera setup
         self.mj_camera.lookat[:] = [0.1, 0.0, 0.1]
@@ -294,24 +296,23 @@ class MuJoCoVRViewer:
         pos = view.pose.position
         quat = view.pose.orientation
 
-        # Base position in MuJoCo world (VR origin).
-        # For STAGE/roomscale: OpenXR Y=0 is floor, standing head is at Y≈1.6m
-        # The robot table is at roughly Z=0.1m in MuJoCo
-        # We want standing height (~1.6m OpenXR Y) to map to ~0.8m MuJoCo Z (above table)
-        # So offset Z = desired_Z - expected_Y = 0.8 - 1.6 = -0.8
-        base_pos = np.array([0.3, 0.3, -0.8], dtype=np.float64)
+        # Base position in MuJoCo world (VR origin). Adjust to place yourself in the scene.
+        # For STAGE (roomscale): Y=0 is floor, standing head ~1.6m
+        # We want to be looking at the robot from a comfortable standing height
+        base_pos = np.array([0.4, 0.3, 0.4], dtype=np.float64)
 
         # Eye position in MuJoCo coordinates
         xr_pos = np.array([pos.x, pos.y, pos.z])
         eye_pos_mj = base_pos + self.xr_to_mj(xr_pos)
 
-        # Debug: print height info every ~2 seconds (only for left eye to reduce spam)
+        # Debug: print camera info every ~2 seconds (only for left eye to reduce spam)
         if eye_idx == 0:
             if not hasattr(self, '_debug_frame'):
                 self._debug_frame = 0
             self._debug_frame += 1
             if self._debug_frame % 120 == 1:
-                print(f"OpenXR Y (height): {pos.y:.2f}m -> MuJoCo Z: {eye_pos_mj[2]:.2f}m")
+                print(f"XR pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]")
+                print(f"MJ eye_pos: [{eye_pos_mj[0]:.2f}, {eye_pos_mj[1]:.2f}, {eye_pos_mj[2]:.2f}]")
 
         # Forward and up vectors from OpenXR quaternion
         fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])  # OpenXR forward is -Z
@@ -324,6 +325,7 @@ class MuJoCoVRViewer:
         up_mj  = up_mj / (np.linalg.norm(up_mj) + 1e-12)
 
         # Use a temporary MjvCamera for mjv_updateScene (it populates the scene geoms)
+        # Must match fusion_fix.py approach for consistent behavior
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
 
@@ -334,7 +336,9 @@ class MuJoCoVRViewer:
 
         # Derive azimuth/elevation from forward direction (MuJoCo uses azimuth about +Z; +Y is left)
         cam.azimuth = np.degrees(np.arctan2(fwd_mj[1], fwd_mj[0]))
-        cam.elevation = -np.degrees(np.arctan2(fwd_mj[2], np.sqrt(fwd_mj[0]**2 + fwd_mj[1]**2)))
+        # elevation: positive = looking up, negative = looking down
+        # fwd_mj[2] > 0 means looking up in MuJoCo (+Z is up)
+        cam.elevation = np.degrees(np.arctan2(fwd_mj[2], np.sqrt(fwd_mj[0]**2 + fwd_mj[1]**2)))
 
         mujoco.mjv_updateScene(
             self.model, self.data, self.mj_option, None,
@@ -345,6 +349,16 @@ class MuJoCoVRViewer:
         self.mj_scene.camera[0].pos[:] = eye_pos_mj
         self.mj_scene.camera[0].forward[:] = fwd_mj
         self.mj_scene.camera[0].up[:] = up_mj
+
+        # Debug: print what we actually set
+        if eye_idx == 0 and hasattr(self, '_debug_frame') and self._debug_frame % 120 == 1:
+            print(f"MJ fwd: [{fwd_mj[0]:.2f}, {fwd_mj[1]:.2f}, {fwd_mj[2]:.2f}]")
+            print(f"MJ up:  [{up_mj[0]:.2f}, {up_mj[1]:.2f}, {up_mj[2]:.2f}]")
+            # Check what's actually in the scene camera after setting
+            sc = self.mj_scene.camera[0]
+            print(f"Scene cam pos: [{sc.pos[0]:.2f}, {sc.pos[1]:.2f}, {sc.pos[2]:.2f}]")
+            print(f"Scene cam fwd: [{sc.forward[0]:.2f}, {sc.forward[1]:.2f}, {sc.forward[2]:.2f}]")
+            print()
 
         # Set an *asymmetric* frustum from OpenXR FOV.
         # OpenXR fov angles are radians about the view axis.
@@ -424,7 +438,7 @@ class MuJoCoVRViewer:
                     reference_space_type=space_type,
                     pose_in_reference_space=xr.Posef(
                         orientation=xr.Quaternionf(0, 0, 0, 1),
-                        position=xr.Vector3f(0, 0, 0),
+                        position=xr.Vector3f(0, 0, 0),  # No offset - handled by base_pos in render
                     ),
                 )
                 return xr.create_reference_space(self.session, info)

@@ -294,11 +294,24 @@ class MuJoCoVRViewer:
         pos = view.pose.position
         quat = view.pose.orientation
 
-        # Base position in MuJoCo world (VR origin). Adjust to place yourself in the scene.
-        base_pos = np.array([0.4, 0.3, 0.4], dtype=np.float64)
+        # Base position in MuJoCo world (VR origin).
+        # For STAGE/roomscale: OpenXR Y=0 is floor, standing head is at Y≈1.6m
+        # The robot table is at roughly Z=0.1m in MuJoCo
+        # We want standing height (~1.6m OpenXR Y) to map to ~0.8m MuJoCo Z (above table)
+        # So offset Z = desired_Z - expected_Y = 0.8 - 1.6 = -0.8
+        base_pos = np.array([0.3, 0.3, -0.8], dtype=np.float64)
 
         # Eye position in MuJoCo coordinates
-        eye_pos_mj = base_pos + self.xr_to_mj([pos.x, pos.y, pos.z])
+        xr_pos = np.array([pos.x, pos.y, pos.z])
+        eye_pos_mj = base_pos + self.xr_to_mj(xr_pos)
+
+        # Debug: print height info every ~2 seconds (only for left eye to reduce spam)
+        if eye_idx == 0:
+            if not hasattr(self, '_debug_frame'):
+                self._debug_frame = 0
+            self._debug_frame += 1
+            if self._debug_frame % 120 == 1:
+                print(f"OpenXR Y (height): {pos.y:.2f}m -> MuJoCo Z: {eye_pos_mj[2]:.2f}m")
 
         # Forward and up vectors from OpenXR quaternion
         fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])  # OpenXR forward is -Z
@@ -310,20 +323,15 @@ class MuJoCoVRViewer:
         fwd_mj = fwd_mj / (np.linalg.norm(fwd_mj) + 1e-12)
         up_mj  = up_mj / (np.linalg.norm(up_mj) + 1e-12)
 
-        # Use a temporary MjvCamera for mjv_updateScene (it populates the scene geoms)
+        # Use a FIXED camera for mjv_updateScene - this only populates the scene geometry.
+        # Using a fixed camera prevents any view-dependent scene computation from causing drift.
+        # The actual VR camera pose is set AFTER updateScene on mj_scene.camera[0].
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-
-        # Choose a focus distance (metres). 1.0 tends to be comfortable.
-        dist = 1.0
-        cam.lookat[:] = eye_pos_mj + fwd_mj * dist
-        cam.distance = dist
-
-        # Derive azimuth/elevation from forward direction (MuJoCo uses azimuth about +Z; +Y is left)
-        cam.azimuth = np.degrees(np.arctan2(fwd_mj[1], fwd_mj[0]))
-        # elevation: positive = looking up, negative = looking down
-        # fwd_mj[2] > 0 means looking up in MuJoCo (+Z is up)
-        cam.elevation = np.degrees(np.arctan2(fwd_mj[2], np.sqrt(fwd_mj[0]**2 + fwd_mj[1]**2)))
+        cam.lookat[:] = [0.1, 0.0, 0.1]  # Fixed: look at robot
+        cam.distance = 0.6
+        cam.azimuth = -120
+        cam.elevation = -20
 
         mujoco.mjv_updateScene(
             self.model, self.data, self.mj_option, None,
@@ -385,15 +393,52 @@ class MuJoCoVRViewer:
             xr.begin_session(self.session, session_begin_info)
             print("Session started!")
 
-            # Reference space (local = seated)
-            ref_space_create_info = xr.ReferenceSpaceCreateInfo(
-                reference_space_type=xr.ReferenceSpaceType.LOCAL,
-                pose_in_reference_space=xr.Posef(
-                    orientation=xr.Quaternionf(0, 0, 0, 1),
-                    position=xr.Vector3f(0, 0, 0),
-                ),
-            )
-            self.reference_space = xr.create_reference_space(self.session, ref_space_create_info)
+                        # Reference space
+            # Prefer room-/floor-scale reference spaces so standing up / walking works as expected.
+            # Fallback to LOCAL if STAGE/LOCAL_FLOOR are not supported by the runtime.
+            try:
+                supported_spaces = xr.enumerate_reference_spaces(self.session)
+            except Exception:
+                supported_spaces = []
+
+            preferred_space = None
+            for t in (
+                xr.ReferenceSpaceType.STAGE,
+                getattr(xr.ReferenceSpaceType, "LOCAL_FLOOR", None),
+                xr.ReferenceSpaceType.LOCAL,
+            ):
+                if t is None:
+                    continue
+                if supported_spaces and t in supported_spaces:
+                    preferred_space = t
+                    break
+                # If we couldn't enumerate, just pick STAGE first and let create fail/fallback below.
+                if not supported_spaces and preferred_space is None:
+                    preferred_space = t
+
+            def _try_create_space(space_type):
+                info = xr.ReferenceSpaceCreateInfo(
+                    reference_space_type=space_type,
+                    pose_in_reference_space=xr.Posef(
+                        orientation=xr.Quaternionf(0, 0, 0, 1),
+                        position=xr.Vector3f(0, 0, 0),
+                    ),
+                )
+                return xr.create_reference_space(self.session, info)
+
+            self.reference_space = None
+            for candidate in [preferred_space, xr.ReferenceSpaceType.LOCAL]:
+                if candidate is None:
+                    continue
+                try:
+                    self.reference_space = _try_create_space(candidate)
+                    print(f"Using reference space: {candidate}")
+                    break
+                except Exception as e:
+                    print(f"Failed to create reference space {candidate}: {e}")
+
+            if self.reference_space is None:
+                raise RuntimeError("Could not create any OpenXR reference space (STAGE/LOCAL_FLOOR/LOCAL).")
 
             # Main loop
             while self.running:

@@ -321,9 +321,7 @@ class MuJoCoVRViewer:
 
         # Derive azimuth/elevation from forward direction (MuJoCo uses azimuth about +Z; +Y is left)
         cam.azimuth = np.degrees(np.arctan2(fwd_mj[1], fwd_mj[0]))
-        # elevation: positive = looking up, negative = looking down
-        # fwd_mj[2] > 0 means looking up in MuJoCo (+Z is up)
-        cam.elevation = np.degrees(np.arctan2(fwd_mj[2], np.sqrt(fwd_mj[0]**2 + fwd_mj[1]**2)))
+        cam.elevation = -np.degrees(np.arctan2(fwd_mj[2], np.sqrt(fwd_mj[0]**2 + fwd_mj[1]**2)))
 
         mujoco.mjv_updateScene(
             self.model, self.data, self.mj_option, None,
