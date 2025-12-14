@@ -18,6 +18,7 @@ Based on pyopenxr examples by Christopher Bruns.
 import ctypes
 import numpy as np
 import mujoco
+import cv2
 from pathlib import Path
 
 try:
@@ -290,54 +291,33 @@ class MuJoCoVRViewer:
         GL.glClearColor(0.2, 0.3, 0.4, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
-        # Extract pose from OpenXR view (already includes per-eye IPD offset!)
-        pos = view.pose.position
-        quat = view.pose.orientation
+        # Simple approach: use MuJoCo's camera directly with minimal changes
+        # Start with a working view, then add stereo offset
 
-        # Base position in MuJoCo world (VR origin)
-        # This is where you "stand" in the scene
-        base_pos = np.array([0.4, 0.3, 0.4])
-
-        # OpenXR coordinate system: +X right, +Y up, -Z forward
-        # MuJoCo coordinate system: +X forward, +Y left, +Z up
-        # Convert OpenXR position to MuJoCo
-        cam_pos = base_pos + np.array([
-            -pos.z,  # OpenXR -Z -> MuJoCo +X
-            -pos.x,  # OpenXR -X -> MuJoCo +Y
-            pos.y    # OpenXR +Y -> MuJoCo +Z
-        ])
-
-        # Get forward direction from quaternion
-        forward = self.quat_to_forward_vector(quat)
-
-        # Convert forward to MuJoCo coords
-        mj_forward = np.array([
-            -forward[2],  # OpenXR -Z -> MuJoCo +X
-            -forward[0],  # OpenXR -X -> MuJoCo +Y
-            forward[1]    # OpenXR +Y -> MuJoCo +Z
-        ])
-
-        # Calculate lookat point (some distance in front of camera)
-        look_distance = 0.5
-        look_target = cam_pos + mj_forward * look_distance
-
-        # Create MuJoCo camera
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
 
-        # Calculate distance and angles from camera to lookat
-        diff = look_target - cam_pos
-        distance = np.linalg.norm(diff)
+        # Base camera setup - looking at the robot
+        cam.lookat[:] = [0.1, 0.0, 0.1]  # Look at robot base area
+        cam.distance = 0.6
+        base_azimuth = -120  # Angle to view robot nicely
+        cam.elevation = -20  # Slightly above
 
-        # MuJoCo uses: azimuth (rotation around Z), elevation (angle from XY plane)
-        azimuth = np.degrees(np.arctan2(-diff[1], diff[0]))  # Note: MuJoCo Y is left
-        horizontal_dist = np.sqrt(diff[0]**2 + diff[1]**2)
-        elevation = np.degrees(np.arctan2(diff[2], horizontal_dist))
+        # Apply stereo offset via azimuth (shifts camera position laterally)
+        # For camera at distance d, lateral offset of IPD/2 requires azimuth change of:
+        # delta = arctan(IPD/2 / distance) in degrees
+        IPD = 0.063
+        stereo_angle = np.degrees(np.arctan2(IPD / 2, cam.distance))
 
-        cam.lookat[:] = look_target
-        cam.distance = max(distance, 0.1)
-        cam.azimuth = azimuth
-        cam.elevation = elevation
+        if eye_idx == 0:
+            cam.azimuth = base_azimuth + stereo_angle  # Left eye - camera moves left
+        else:
+            cam.azimuth = base_azimuth - stereo_angle  # Right eye - camera moves right
+
+        # Set FOV from OpenXR
+        fov = view.fov
+        vfov = np.degrees(fov.angle_up - fov.angle_down)
+        self.model.vis.global_.fovy = vfov
 
         # Update scene
         mujoco.mjv_updateScene(
@@ -345,13 +325,56 @@ class MuJoCoVRViewer:
             cam, mujoco.mjtCatBit.mjCAT_ALL, self.mj_scene
         )
 
-        # Create viewport
-        viewport = mujoco.MjrRect(0, 0, width, height)
-
         # Render
+        viewport = mujoco.MjrRect(0, 0, width, height)
         mujoco.mjr_render(viewport, self.mj_scene, self.mj_context)
 
+        # Read back pixels for preview window
+        # Re-bind framebuffer to ensure we read from correct buffer
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
+        GL.glReadBuffer(GL.GL_COLOR_ATTACHMENT0)
+        pixels = GL.glReadPixels(0, 0, width, height, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
+        if not hasattr(self, '_preview_images'):
+            self._preview_images = [None, None]
+        self._preview_images[eye_idx] = (pixels, width, height)
+
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
+
+    def display_preview(self):
+        """Display both eye views side-by-side using OpenCV."""
+        if not hasattr(self, '_preview_images') or None in self._preview_images:
+            return
+
+        left_pixels, lw, lh = self._preview_images[0]
+        right_pixels, rw, rh = self._preview_images[1]
+
+        # Convert to numpy arrays
+        left_img = np.frombuffer(left_pixels, dtype=np.uint8).reshape(lh, lw, 3)
+        right_img = np.frombuffer(right_pixels, dtype=np.uint8).reshape(rh, rw, 3)
+
+        # Flip vertically (OpenGL origin is bottom-left)
+        left_img = np.flipud(left_img)
+        right_img = np.flipud(right_img)
+
+        # Convert RGB to BGR for OpenCV
+        left_img = cv2.cvtColor(left_img, cv2.COLOR_RGB2BGR)
+        right_img = cv2.cvtColor(right_img, cv2.COLOR_RGB2BGR)
+
+        # Scale down for preview (1/4 size)
+        scale = 4
+        left_small = cv2.resize(left_img, (lw // scale, lh // scale))
+        right_small = cv2.resize(right_img, (rw // scale, rh // scale))
+
+        # Add labels
+        cv2.putText(left_small, "LEFT", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        cv2.putText(right_small, "RIGHT", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
+
+        # Combine side by side
+        combined = np.hstack([left_small, right_small])
+
+        # Display with OpenCV
+        cv2.imshow("VR Preview - LEFT | RIGHT", combined)
+        cv2.waitKey(1)
 
     def run(self):
         """Main VR render loop."""
@@ -451,6 +474,9 @@ class MuJoCoVRViewer:
                     )
                     projection_views.append(projection_view)
 
+                # Display preview in window
+                self.display_preview()
+
                 # Step simulation
                 mujoco.mj_step(self.model, self.data)
 
@@ -525,6 +551,8 @@ class MuJoCoVRViewer:
         if hasattr(self, 'window') and self.window:
             glfw.destroy_window(self.window)
             glfw.terminate()
+
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
