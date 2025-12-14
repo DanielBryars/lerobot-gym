@@ -19,7 +19,6 @@ import ctypes
 import numpy as np
 import mujoco
 from pathlib import Path
-from xr.utils import Matrix4x4f, GraphicsAPI
 
 try:
     import xr
@@ -61,6 +60,8 @@ class MuJoCoVRViewer:
         self.mj_context = None
         self.mj_camera = mujoco.MjvCamera()
         self.mj_option = mujoco.MjvOption()
+        # Offset between XR space (right/up/-forward) and MuJoCo scene origin to place the robot under the user.
+        self.stage_offset_xr = xr.Vector3f(-0.3, -0.8, -0.3)
 
         # Default camera setup
         self.mj_camera.lookat[:] = [0.1, 0.0, 0.1]
@@ -279,18 +280,15 @@ class MuJoCoVRViewer:
         return v + w * t + np.cross(qv, t)
 
     def xr_to_mj(self, v):
-        """Convert a vector from OpenXR coords to MuJoCo coords.
-
-        OpenXR: +X right, +Y up, -Z forward (right-handed)
-        MuJoCo: +X forward, +Y left, +Z up (right-handed)
-        """
+        """Convert vector from OpenXR (+X right, +Y up, -Z forward) to MuJoCo (+X forward, +Y left, +Z up)."""
         v = np.array(v, dtype=np.float64)
         return np.array([-v[2], -v[0], v[1]], dtype=np.float64)
 
     def render_eye(self, eye_idx, view, fbo, width, height):
-        """Render scene for one eye using the OpenXR eye pose."""
+        """Render scene for one eye using the OpenXR eye pose + asymmetric FOV."""
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
         GL.glViewport(0, 0, width, height)
+        GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glClearColor(0.2, 0.3, 0.4, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
@@ -299,57 +297,98 @@ class MuJoCoVRViewer:
         quat = view.pose.orientation
 
         # Base position in MuJoCo world (VR origin). Adjust to place yourself in the scene.
-        base_pos = np.array([0.4, 0.3, 0.4], dtype=np.float64)
+        # For STAGE (roomscale): Y=0 is floor, standing head ~1.2-1.6m
+        # Robot is at Z≈0.1m. We want standing eye level at Z≈0.5m (comfortable table height)
+        # So: base_pos[2] + XR_Y = 0.5 → base_pos[2] = 0.5 - 1.4 = -0.9
+        base_pos = np.array([0.4, 0.3, -0.9], dtype=np.float64)
 
         # Eye position in MuJoCo coordinates
-        eye_pos_mj = base_pos + self.xr_to_mj([pos.x, pos.y, pos.z])
+        xr_pos = np.array([pos.x, pos.y, pos.z])
+        eye_pos_mj = base_pos + self.xr_to_mj(xr_pos)
 
-        # Forward and up vectors from OpenXR quaternion
-        fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])  # OpenXR forward is -Z
-        up_xr = self.quat_rotate(quat, [0.0, 1.0, 0.0])    # OpenXR up is +Y
+        # Debug: print camera info every ~2 seconds (only for left eye to reduce spam)
+        if eye_idx == 0:
+            if not hasattr(self, '_debug_frame'):
+                self._debug_frame = 0
+            self._debug_frame += 1
+            if self._debug_frame % 120 == 1:
+                print(f"XR pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]")
+                print(f"MJ eye_pos: [{eye_pos_mj[0]:.2f}, {eye_pos_mj[1]:.2f}, {eye_pos_mj[2]:.2f}]")
+
+        # Forward, up, and right vectors from OpenXR quaternion
+        fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])   # OpenXR forward is -Z
+        up_xr  = self.quat_rotate(quat, [0.0, 1.0,  0.0])   # OpenXR up is +Y
+        right_xr = self.quat_rotate(quat, [1.0, 0.0, 0.0])  # OpenXR right is +X
 
         # Convert to MuJoCo coordinates
         fwd_mj = self.xr_to_mj(fwd_xr)
-        up_mj = self.xr_to_mj(up_xr)
+        right_mj = self.xr_to_mj(right_xr)
         fwd_mj = fwd_mj / (np.linalg.norm(fwd_mj) + 1e-12)
+        right_mj = right_mj / (np.linalg.norm(right_mj) + 1e-12)
+
+        # Compute up from cross product to ensure correct handedness
+        up_mj = np.cross(right_mj, fwd_mj)
         up_mj = up_mj / (np.linalg.norm(up_mj) + 1e-12)
 
-        # Use a simple camera for mjv_updateScene (it updates geometry)
+        # Use a temporary MjvCamera for mjv_updateScene (it populates the scene geoms)
+        # Must match fusion_fix.py approach for consistent behavior
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
-        cam.lookat[:] = eye_pos_mj + fwd_mj * 0.5
-        cam.distance = 0.5
-        cam.azimuth = 0
-        cam.elevation = 0
 
-        # Update scene geometry
+        # Choose a focus distance (metres). 1.0 tends to be comfortable.
+        dist = 1.0
+        cam.lookat[:] = eye_pos_mj + fwd_mj * dist
+        cam.distance = dist
+
+        # Derive azimuth/elevation from forward direction (MuJoCo uses azimuth about +Z; +Y is left)
+        cam.azimuth = np.degrees(np.arctan2(fwd_mj[1], fwd_mj[0]))
+        # elevation: positive = looking up, negative = looking down
+        # fwd_mj[2] > 0 means looking up in MuJoCo (+Z is up)
+        cam.elevation = np.degrees(np.arctan2(fwd_mj[2], np.sqrt(fwd_mj[0]**2 + fwd_mj[1]**2)))
+
         mujoco.mjv_updateScene(
             self.model, self.data, self.mj_option, None,
             cam, mujoco.mjtCatBit.mjCAT_ALL, self.mj_scene
         )
 
-        # NOW set MuJoCo scene camera directly AFTER updateScene
-        # (updateScene overwrites camera, so we set it after)
+        # Override the actual render camera pose (mjv_updateScene may overwrite it)
         self.mj_scene.camera[0].pos[:] = eye_pos_mj
         self.mj_scene.camera[0].forward[:] = fwd_mj
         self.mj_scene.camera[0].up[:] = up_mj
 
-        # Set frustum from OpenXR FOV (asymmetric!)
+        # DEBUG: Test if MuJoCo uses our up vector at all
+        # Uncomment the next line to force world-up and see if roll works
+        # self.mj_scene.camera[0].up[:] = [0, 0, 1]  # Force world-up (no roll)
+
+        # Debug: print what we actually set
+        if eye_idx == 0 and hasattr(self, '_debug_frame') and self._debug_frame % 120 == 1:
+            print(f"MJ fwd: [{fwd_mj[0]:.2f}, {fwd_mj[1]:.2f}, {fwd_mj[2]:.2f}]")
+            print(f"MJ up:  [{up_mj[0]:.2f}, {up_mj[1]:.2f}, {up_mj[2]:.2f}]")
+            # Check what's actually in the scene camera after setting
+            sc = self.mj_scene.camera[0]
+            print(f"Scene cam pos: [{sc.pos[0]:.2f}, {sc.pos[1]:.2f}, {sc.pos[2]:.2f}]")
+            print(f"Scene cam fwd: [{sc.forward[0]:.2f}, {sc.forward[1]:.2f}, {sc.forward[2]:.2f}]")
+            print()
+
+        # Set an *asymmetric* frustum from OpenXR FOV.
+        # OpenXR fov angles are radians about the view axis.
         fov = view.fov
         near = 0.05
         far = 50.0
 
-        # Compute frustum dimensions at near plane
-        # OpenXR FOV angles are from the view axis
-        left = near * np.tan(fov.angle_left)    # negative
-        right = near * np.tan(fov.angle_right)  # positive
-        bottom = near * np.tan(fov.angle_down)  # negative
-        top = near * np.tan(fov.angle_up)       # positive
+        left   = near * np.tan(fov.angle_left)   # typically negative
+        right  = near * np.tan(fov.angle_right)  # typically positive
+        bottom = near * np.tan(fov.angle_down)   # typically negative
+        top    = near * np.tan(fov.angle_up)     # typically positive
+
+        # MuJoCo camera frustum params encode left/right via center+width.
+        center = (left + right) / 2.0
+        half_width = (right - left) / 2.0
 
         self.mj_scene.camera[0].frustum_near = near
         self.mj_scene.camera[0].frustum_far = far
-        self.mj_scene.camera[0].frustum_center = 0.0  # 0 for perspective
-        self.mj_scene.camera[0].frustum_width = (right - left) / 2  # half-width
+        self.mj_scene.camera[0].frustum_center = center
+        self.mj_scene.camera[0].frustum_width = half_width
         self.mj_scene.camera[0].frustum_bottom = bottom
         self.mj_scene.camera[0].frustum_top = top
 
@@ -381,15 +420,52 @@ class MuJoCoVRViewer:
             xr.begin_session(self.session, session_begin_info)
             print("Session started!")
 
-            # Reference space (local = seated)
-            ref_space_create_info = xr.ReferenceSpaceCreateInfo(
-                reference_space_type=xr.ReferenceSpaceType.LOCAL,
-                pose_in_reference_space=xr.Posef(
-                    orientation=xr.Quaternionf(0, 0, 0, 1),
-                    position=xr.Vector3f(0, 0, 0),
-                ),
-            )
-            self.reference_space = xr.create_reference_space(self.session, ref_space_create_info)
+                        # Reference space
+            # Prefer room-/floor-scale reference spaces so standing up / walking works as expected.
+            # Fallback to LOCAL if STAGE/LOCAL_FLOOR are not supported by the runtime.
+            try:
+                supported_spaces = xr.enumerate_reference_spaces(self.session)
+            except Exception:
+                supported_spaces = []
+
+            preferred_space = None
+            for t in (
+                xr.ReferenceSpaceType.STAGE,
+                getattr(xr.ReferenceSpaceType, "LOCAL_FLOOR", None),
+                xr.ReferenceSpaceType.LOCAL,
+            ):
+                if t is None:
+                    continue
+                if supported_spaces and t in supported_spaces:
+                    preferred_space = t
+                    break
+                # If we couldn't enumerate, just pick STAGE first and let create fail/fallback below.
+                if not supported_spaces and preferred_space is None:
+                    preferred_space = t
+
+            def _try_create_space(space_type):
+                info = xr.ReferenceSpaceCreateInfo(
+                    reference_space_type=space_type,
+                    pose_in_reference_space=xr.Posef(
+                        orientation=xr.Quaternionf(0, 0, 0, 1),
+                        position=xr.Vector3f(0, 0, 0),  # No offset - handled by base_pos in render
+                    ),
+                )
+                return xr.create_reference_space(self.session, info)
+
+            self.reference_space = None
+            for candidate in [preferred_space, xr.ReferenceSpaceType.LOCAL]:
+                if candidate is None:
+                    continue
+                try:
+                    self.reference_space = _try_create_space(candidate)
+                    print(f"Using reference space: {candidate}")
+                    break
+                except Exception as e:
+                    print(f"Failed to create reference space {candidate}: {e}")
+
+            if self.reference_space is None:
+                raise RuntimeError("Could not create any OpenXR reference space (STAGE/LOCAL_FLOOR/LOCAL).")
 
             # Main loop
             while self.running:
