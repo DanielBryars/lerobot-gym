@@ -1,21 +1,32 @@
 """
-MuJoCo VR Viewer using OpenXR.
+MuJoCo VR Viewer using OpenXR with Leader Arm Teleoperation.
 
 Proper head-tracked VR rendering with Quest Link.
 Uses pyopenxr for OpenXR bindings and MuJoCo for physics/rendering.
+Optionally connects to a physical leader arm for teleoperation.
 
 Requirements:
     pip install pyopenxr glfw PyOpenGL numpy mujoco
 
 Setup:
     1. Connect Quest 3 via Quest Link (USB or Air Link)
-    2. Run this script
-    3. Put on headset - you should see the simulation in VR
+    2. (Optional) Connect leader arm for teleoperation
+    3. Run this script
+    4. Put on headset - you should see the simulation in VR
+
+Usage:
+    python vr_openxr_viewer.py                    # VR only (no teleop)
+    python vr_openxr_viewer.py --teleop           # VR + leader arm teleop
+    python vr_openxr_viewer.py --teleop --port COM8
 
 Based on pyopenxr examples by Christopher Bruns.
 """
 
+import argparse
 import ctypes
+import json
+import threading
+import time
 import numpy as np
 import mujoco
 from pathlib import Path
@@ -40,9 +51,77 @@ SCENE_XML = Path(__file__).parent / "scenes" / "so101_with_wrist_cam.xml"
 # Eye separation (IPD will come from OpenXR runtime)
 DEFAULT_IPD = 0.063
 
+# Sim action space bounds (radians)
+SIM_ACTION_LOW = np.array([-1.91986, -1.74533, -1.69, -1.65806, -2.74385, -0.17453])
+SIM_ACTION_HIGH = np.array([1.91986, 1.74533, 1.69, 1.65806, 2.84121, 1.74533])
+
+
+def normalized_to_radians(normalized_values: np.ndarray) -> np.ndarray:
+    """Convert from lerobot normalized values to sim radians."""
+    radians = np.zeros(6, dtype=np.float32)
+    # Joints 0-4: map [-100, 100] -> [low, high]
+    for i in range(5):
+        t = (normalized_values[i] + 100) / 200.0
+        radians[i] = SIM_ACTION_LOW[i] + t * (SIM_ACTION_HIGH[i] - SIM_ACTION_LOW[i])
+    # Gripper: map [0, 100] -> [low, high]
+    t = normalized_values[5] / 100.0
+    radians[5] = SIM_ACTION_LOW[5] + t * (SIM_ACTION_HIGH[5] - SIM_ACTION_LOW[5])
+    return radians
+
+
+def load_config():
+    """Load config.json for COM port settings."""
+    config_paths = [
+        Path("E:/git/ai/lerobot-scratch/config.json"),
+        Path("../lerobot-scratch/config.json"),
+        Path("config.json"),
+    ]
+    for path in config_paths:
+        if path.exists():
+            with open(path) as f:
+                return json.load(f)
+    return None
+
+
+def create_leader_bus(port: str):
+    """Create motor bus for leader arm with STS3250 motors."""
+    from lerobot.motors import Motor, MotorNormMode
+    from lerobot.motors.feetech import FeetechMotorsBus
+
+    bus = FeetechMotorsBus(
+        port=port,
+        motors={
+            "shoulder_pan": Motor(1, "sts3250", MotorNormMode.RANGE_M100_100),
+            "shoulder_lift": Motor(2, "sts3250", MotorNormMode.RANGE_M100_100),
+            "elbow_flex": Motor(3, "sts3250", MotorNormMode.RANGE_M100_100),
+            "wrist_flex": Motor(4, "sts3250", MotorNormMode.RANGE_M100_100),
+            "wrist_roll": Motor(5, "sts3250", MotorNormMode.RANGE_M100_100),
+            "gripper": Motor(6, "sts3250", MotorNormMode.RANGE_0_100),
+        },
+    )
+    return bus
+
+
+def load_calibration(arm_id: str = "leader_so100"):
+    """Load calibration from JSON file."""
+    import draccus
+    from lerobot.motors import MotorCalibration
+    from lerobot.utils.constants import HF_LEROBOT_CALIBRATION
+
+    calib_path = HF_LEROBOT_CALIBRATION / "teleoperators" / "so100_leader_sts3250" / f"{arm_id}.json"
+
+    if not calib_path.exists():
+        raise FileNotFoundError(
+            f"Calibration file not found: {calib_path}\n"
+            f"Run 'python calibrate_from_zero.py' first."
+        )
+
+    with open(calib_path) as f, draccus.config_type("json"):
+        return draccus.load(dict[str, MotorCalibration], f)
+
 
 class MuJoCoVRViewer:
-    def __init__(self):
+    def __init__(self, teleop_enabled=False, leader_port=None):
         print(f"Loading MuJoCo scene: {SCENE_XML}")
         self.model = mujoco.MjModel.from_xml_path(str(SCENE_XML))
         self.data = mujoco.MjData(self.model)
@@ -78,6 +157,195 @@ class MuJoCoVRViewer:
         self.frame_buffers = []
         self.projection_views = []
         self.running = True
+
+        # Teleop state
+        self.teleop_enabled = teleop_enabled
+        self.leader_port = leader_port
+        self.leader_bus = None
+        self.step_count = 0
+
+        # Async teleop - read motors in background thread
+        self.teleop_thread = None
+        self.teleop_running = False
+        self.latest_joint_radians = None
+        self.latest_joint_timestamp = 0.0  # When the reading was taken
+        self.joint_radians_lock = threading.Lock()
+
+        # Timing stats
+        self.frame_times = []
+        self.motor_read_times = []
+        self.last_frame_time = time.perf_counter()
+        self.last_stats_time = time.perf_counter()
+
+        # Scene position offset (can be adjusted at runtime)
+        # For STAGE (roomscale): Y=0 is floor, standing head ~1.2-1.6m
+        # Robot is at Z≈0.1m. We want standing eye level at Z≈0.5m
+        self.base_pos = np.array([0.4, 0.3, -0.9], dtype=np.float64)
+        self.scene_yaw = 0.0  # Rotation around Z axis in degrees
+
+        # Store last head position for recentering
+        self.last_head_pos_xr = None
+        self.last_head_yaw_xr = None
+
+    def init_teleop(self):
+        """Initialize leader arm for teleoperation."""
+        if not self.teleop_enabled:
+            return
+
+        print(f"\nConnecting to leader arm on {self.leader_port}...")
+        self.leader_bus = create_leader_bus(self.leader_port)
+        self.leader_bus.connect()
+
+        # Load calibration
+        print("Loading calibration...")
+        self.leader_bus.calibration = load_calibration("leader_so100")
+        self.leader_bus.disable_torque()
+        print("Leader arm connected! Move it to control the simulation.")
+
+        # Start background thread for reading motor positions
+        self.teleop_running = True
+        self.teleop_thread = threading.Thread(target=self._teleop_read_loop, daemon=True)
+        self.teleop_thread.start()
+        print("Teleop read thread started.\n")
+
+    def _teleop_read_loop(self):
+        """Background thread that continuously reads motor positions."""
+        consecutive_errors = 0
+        max_errors = 5
+        target_hz = 200  # Limit read rate to reduce bus saturation
+        min_interval = 1.0 / target_hz
+
+        while self.teleop_running and self.leader_bus is not None:
+            loop_start = time.perf_counter()
+            try:
+                read_start = time.perf_counter()
+                positions = self.leader_bus.sync_read("Present_Position")
+                read_end = time.perf_counter()
+
+                consecutive_errors = 0  # Reset on success
+
+                # Track read time
+                read_duration_ms = (read_end - read_start) * 1000
+                with self.joint_radians_lock:
+                    self.motor_read_times.append(read_duration_ms)
+                    if len(self.motor_read_times) > 100:
+                        self.motor_read_times.pop(0)
+
+                normalized = np.array([
+                    positions["shoulder_pan"],
+                    positions["shoulder_lift"],
+                    positions["elbow_flex"],
+                    positions["wrist_flex"],
+                    positions["wrist_roll"],
+                    positions["gripper"],
+                ], dtype=np.float32)
+
+                # Convert to radians and clip
+                joint_radians = normalized_to_radians(normalized)
+                joint_radians = np.clip(joint_radians, SIM_ACTION_LOW, SIM_ACTION_HIGH)
+
+                # Store for main thread to use
+                with self.joint_radians_lock:
+                    self.latest_joint_radians = joint_radians
+                    self.latest_joint_timestamp = read_end
+
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"Teleop read error ({consecutive_errors}/{max_errors}): {e}")
+                if consecutive_errors >= max_errors:
+                    print("Too many consecutive errors, stopping teleop thread")
+                    break
+                time.sleep(0.05)  # Brief pause before retry
+                continue
+
+            # Rate limit to avoid saturating the serial bus
+            elapsed = time.perf_counter() - loop_start
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+
+    def get_latest_joint_radians(self):
+        """Get the latest joint positions and timestamp (non-blocking)."""
+        with self.joint_radians_lock:
+            return self.latest_joint_radians, self.latest_joint_timestamp
+
+    def cleanup_teleop(self):
+        """Disconnect leader arm and stop thread."""
+        self.teleop_running = False
+
+        if self.teleop_thread is not None:
+            self.teleop_thread.join(timeout=1.0)
+            self.teleop_thread = None
+
+        if self.leader_bus is not None:
+            print("Disconnecting leader arm...")
+            self.leader_bus.disconnect()
+            self.leader_bus = None
+
+    def recenter_scene(self):
+        """Move the scene so the robot is directly in front of current head position."""
+        if self.last_head_pos_xr is None:
+            print("Cannot recenter - no head position yet")
+            return
+
+        # Convert current head position to MuJoCo coordinates
+        head_mj = self.xr_to_mj(self.last_head_pos_xr)
+
+        # Set base_pos so robot appears at a comfortable distance in front
+        # Robot is at MuJoCo origin [0, 0, 0.1]
+        # We want it ~0.5m in front of us at table height
+        robot_pos = np.array([0.1, 0.0, 0.1])
+        desired_offset = np.array([0.5, 0.0, 0.0])  # 0.5m in front
+
+        # New base_pos places robot in front of head
+        self.base_pos = robot_pos - head_mj - desired_offset
+
+        print(f"Scene recentered! base_pos: [{self.base_pos[0]:.2f}, {self.base_pos[1]:.2f}, {self.base_pos[2]:.2f}]")
+
+    def move_scene(self, dx=0.0, dy=0.0, dz=0.0):
+        """Move the scene by the given offsets (in MuJoCo coordinates)."""
+        self.base_pos[0] += dx  # Forward/back
+        self.base_pos[1] += dy  # Left/right
+        self.base_pos[2] += dz  # Up/down
+
+    def handle_keyboard(self):
+        """Handle keyboard input for scene controls."""
+        # Movement amount per key press
+        move_step = 0.05  # 5cm
+
+        # Check for key presses (GLFW key states)
+        # WASD for horizontal movement, QE for up/down, R for recenter
+        if glfw.get_key(self.window, glfw.KEY_W) == glfw.PRESS:
+            self.move_scene(dx=move_step)  # Move scene forward (robot appears closer)
+        if glfw.get_key(self.window, glfw.KEY_S) == glfw.PRESS:
+            self.move_scene(dx=-move_step)  # Move scene back
+        if glfw.get_key(self.window, glfw.KEY_A) == glfw.PRESS:
+            self.move_scene(dy=move_step)  # Move scene left
+        if glfw.get_key(self.window, glfw.KEY_D) == glfw.PRESS:
+            self.move_scene(dy=-move_step)  # Move scene right
+        if glfw.get_key(self.window, glfw.KEY_Q) == glfw.PRESS:
+            self.move_scene(dz=move_step)  # Move scene up
+        if glfw.get_key(self.window, glfw.KEY_E) == glfw.PRESS:
+            self.move_scene(dz=-move_step)  # Move scene down
+
+        # R to recenter (with debounce)
+        if glfw.get_key(self.window, glfw.KEY_R) == glfw.PRESS:
+            if not hasattr(self, '_r_pressed'):
+                self._r_pressed = False
+            if not self._r_pressed:
+                self.recenter_scene()
+                self._r_pressed = True
+        else:
+            self._r_pressed = False
+
+        # P to print current position
+        if glfw.get_key(self.window, glfw.KEY_P) == glfw.PRESS:
+            if not hasattr(self, '_p_pressed'):
+                self._p_pressed = False
+            if not self._p_pressed:
+                print(f"base_pos: [{self.base_pos[0]:.2f}, {self.base_pos[1]:.2f}, {self.base_pos[2]:.2f}]")
+                self._p_pressed = True
+        else:
+            self._p_pressed = False
 
     def init_openxr(self):
         """Initialize OpenXR instance, system, and session."""
@@ -296,24 +564,16 @@ class MuJoCoVRViewer:
         pos = view.pose.position
         quat = view.pose.orientation
 
-        # Base position in MuJoCo world (VR origin). Adjust to place yourself in the scene.
-        # For STAGE (roomscale): Y=0 is floor, standing head ~1.2-1.6m
-        # Robot is at Z≈0.1m. We want standing eye level at Z≈0.5m (comfortable table height)
-        # So: base_pos[2] + XR_Y = 0.5 → base_pos[2] = 0.5 - 1.4 = -0.9
-        base_pos = np.array([0.4, 0.3, -0.9], dtype=np.float64)
-
-        # Eye position in MuJoCo coordinates
-        xr_pos = np.array([pos.x, pos.y, pos.z])
-        eye_pos_mj = base_pos + self.xr_to_mj(xr_pos)
-
-        # Debug: print camera info every ~2 seconds (only for left eye to reduce spam)
+        # Store head position for recentering (left eye only)
         if eye_idx == 0:
-            if not hasattr(self, '_debug_frame'):
-                self._debug_frame = 0
-            self._debug_frame += 1
-            if self._debug_frame % 120 == 1:
-                print(f"XR pos: [{pos.x:.2f}, {pos.y:.2f}, {pos.z:.2f}]")
-                print(f"MJ eye_pos: [{eye_pos_mj[0]:.2f}, {eye_pos_mj[1]:.2f}, {eye_pos_mj[2]:.2f}]")
+            self.last_head_pos_xr = np.array([pos.x, pos.y, pos.z])
+            # Compute head yaw from forward vector
+            fwd_temp = self.quat_rotate(quat, [0.0, 0.0, -1.0])
+            self.last_head_yaw_xr = np.degrees(np.arctan2(-fwd_temp[0], -fwd_temp[2]))
+
+        # Eye position in MuJoCo coordinates (using adjustable base_pos)
+        xr_pos = np.array([pos.x, pos.y, pos.z])
+        eye_pos_mj = self.base_pos + self.xr_to_mj(xr_pos)
 
         # Forward, up, and right vectors from OpenXR quaternion
         fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])   # OpenXR forward is -Z
@@ -356,20 +616,6 @@ class MuJoCoVRViewer:
         self.mj_scene.camera[0].forward[:] = fwd_mj
         self.mj_scene.camera[0].up[:] = up_mj
 
-        # DEBUG: Test if MuJoCo uses our up vector at all
-        # Uncomment the next line to force world-up and see if roll works
-        # self.mj_scene.camera[0].up[:] = [0, 0, 1]  # Force world-up (no roll)
-
-        # Debug: print what we actually set
-        if eye_idx == 0 and hasattr(self, '_debug_frame') and self._debug_frame % 120 == 1:
-            print(f"MJ fwd: [{fwd_mj[0]:.2f}, {fwd_mj[1]:.2f}, {fwd_mj[2]:.2f}]")
-            print(f"MJ up:  [{up_mj[0]:.2f}, {up_mj[1]:.2f}, {up_mj[2]:.2f}]")
-            # Check what's actually in the scene camera after setting
-            sc = self.mj_scene.camera[0]
-            print(f"Scene cam pos: [{sc.pos[0]:.2f}, {sc.pos[1]:.2f}, {sc.pos[2]:.2f}]")
-            print(f"Scene cam fwd: [{sc.forward[0]:.2f}, {sc.forward[1]:.2f}, {sc.forward[2]:.2f}]")
-            print()
-
         # Set an *asymmetric* frustum from OpenXR FOV.
         # OpenXR fov angles are radians about the view axis.
         fov = view.fov
@@ -401,9 +647,18 @@ class MuJoCoVRViewer:
         """Main VR render loop."""
         print("\n" + "="*60)
         print("MuJoCo VR Viewer - OpenXR")
+        if self.teleop_enabled:
+            print("WITH LEADER ARM TELEOPERATION")
         print("="*60)
         print("Make sure Quest Link is active!")
-        print("Press Ctrl+C to exit")
+        if self.teleop_enabled:
+            print("Move leader arm to control the simulation")
+        print("\nScene Controls (focus desktop window):")
+        print("  WASD  - Move scene forward/back/left/right")
+        print("  Q/E   - Move scene up/down")
+        print("  R     - Recenter robot in front of you")
+        print("  P     - Print current position")
+        print("\nPress Ctrl+C to exit")
         print("="*60 + "\n")
 
         try:
@@ -412,6 +667,7 @@ class MuJoCoVRViewer:
             self.init_session()
             self.init_swapchains()
             self.init_mujoco_rendering()
+            self.init_teleop()
 
             # Begin session
             session_begin_info = xr.SessionBeginInfo(
@@ -470,6 +726,7 @@ class MuJoCoVRViewer:
             # Main loop
             while self.running:
                 glfw.poll_events()
+                self.handle_keyboard()
 
                 if glfw.window_should_close(self.window):
                     break
@@ -532,8 +789,46 @@ class MuJoCoVRViewer:
                     )
                     projection_views.append(projection_view)
 
-                # Step simulation
-                mujoco.mj_step(self.model, self.data)
+                # Track frame timing
+                now = time.perf_counter()
+                frame_time_ms = (now - self.last_frame_time) * 1000
+                self.last_frame_time = now
+                self.frame_times.append(frame_time_ms)
+                if len(self.frame_times) > 100:
+                    self.frame_times.pop(0)
+
+                # Read from leader arm if teleop enabled (non-blocking)
+                data_age_ms = 0.0
+                if self.teleop_enabled:
+                    joint_radians, timestamp = self.get_latest_joint_radians()
+                    if joint_radians is not None:
+                        # Direct qpos setting for instant response
+                        self.data.qpos[:6] = joint_radians
+                        data_age_ms = (now - timestamp) * 1000
+                    # Use mj_forward (kinematics only) - no physics stepping
+                    mujoco.mj_forward(self.model, self.data)
+                else:
+                    # Full physics simulation when not in teleop mode
+                    mujoco.mj_step(self.model, self.data)
+                self.step_count += 1
+
+                # Print timing stats every 2 seconds
+                if now - self.last_stats_time >= 2.0:
+                    self.last_stats_time = now
+
+                    avg_frame = np.mean(self.frame_times) if self.frame_times else 0
+                    fps = 1000.0 / avg_frame if avg_frame > 0 else 0
+
+                    if self.teleop_enabled:
+                        with self.joint_radians_lock:
+                            avg_read = np.mean(self.motor_read_times) if self.motor_read_times else 0
+                            motor_hz = 1000.0 / avg_read if avg_read > 0 else 0
+
+                        print(f"VR: {fps:.1f} fps ({avg_frame:.1f}ms) | "
+                              f"Motor read: {avg_read:.1f}ms ({motor_hz:.1f} Hz) | "
+                              f"Data age: {data_age_ms:.1f}ms")
+                    else:
+                        print(f"VR: {fps:.1f} fps ({avg_frame:.1f}ms)")
 
                 # Submit frame
                 projection_layer = xr.CompositionLayerProjection(
@@ -591,6 +886,9 @@ class MuJoCoVRViewer:
         """Clean up resources."""
         print("Cleaning up...")
 
+        # Disconnect leader arm first
+        self.cleanup_teleop()
+
         if self.session:
             try:
                 xr.destroy_session(self.session)
@@ -608,6 +906,32 @@ class MuJoCoVRViewer:
             glfw.terminate()
 
 
-if __name__ == "__main__":
-    viewer = MuJoCoVRViewer()
+def main():
+    parser = argparse.ArgumentParser(description="MuJoCo VR Viewer with optional teleoperation")
+    parser.add_argument("--teleop", "-t", action="store_true",
+                        help="Enable leader arm teleoperation")
+    parser.add_argument("--port", "-p", type=str, default=None,
+                        help="Serial port for leader arm (default: from config.json or COM8)")
+
+    args = parser.parse_args()
+
+    # Get leader port if teleop enabled
+    leader_port = args.port
+    if args.teleop and leader_port is None:
+        config = load_config()
+        if config and "leader" in config:
+            leader_port = config["leader"]["port"]
+            print(f"Using leader port from config: {leader_port}")
+        else:
+            leader_port = "COM8"
+            print(f"Using default leader port: {leader_port}")
+
+    viewer = MuJoCoVRViewer(
+        teleop_enabled=args.teleop,
+        leader_port=leader_port
+    )
     viewer.run()
+
+
+if __name__ == "__main__":
+    main()
