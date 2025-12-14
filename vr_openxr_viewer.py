@@ -18,7 +18,6 @@ Based on pyopenxr examples by Christopher Bruns.
 import ctypes
 import numpy as np
 import mujoco
-import cv2
 from pathlib import Path
 
 try:
@@ -270,54 +269,65 @@ class MuJoCoVRViewer:
         self.mj_scene = mujoco.MjvScene(self.model, maxgeom=10000)
         self.mj_context = mujoco.MjrContext(self.model, mujoco.mjtFontScale.mjFONTSCALE_150)
 
-    def quat_to_forward_vector(self, quat):
-        """Convert OpenXR quaternion to forward direction vector."""
-        # OpenXR quaternion: (x, y, z, w)
+    def quat_rotate(self, quat, v):
+        """Rotate vector v by OpenXR quaternion (x,y,z,w)."""
         x, y, z, w = quat.x, quat.y, quat.z, quat.w
+        qv = np.array([x, y, z], dtype=np.float64)
+        v = np.array(v, dtype=np.float64)
+        t = 2.0 * np.cross(qv, v)
+        return v + w * t + np.cross(qv, t)
 
-        # Forward vector is -Z in OpenXR (right-handed)
-        # Rotate (0, 0, -1) by quaternion
-        forward = np.array([
-            2 * (x * z + w * y),
-            2 * (y * z - w * x),
-            -(1 - 2 * (x * x + y * y))
-        ])
-        return forward
+    def xr_to_mj(self, v):
+        """Convert a vector from OpenXR coords to MuJoCo coords.
+
+        OpenXR: +X right, +Y up, -Z forward (right-handed)
+        MuJoCo: +X forward, +Y left, +Z up (right-handed)
+        """
+        v = np.array(v, dtype=np.float64)
+        return np.array([-v[2], -v[0], v[1]], dtype=np.float64)
 
     def render_eye(self, eye_idx, view, fbo, width, height):
-        """Render scene for one eye using HMD pose."""
+        """Render scene for one eye using the OpenXR eye pose."""
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
         GL.glViewport(0, 0, width, height)
         GL.glClearColor(0.2, 0.3, 0.4, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
-        # Simple approach: use MuJoCo's camera directly with minimal changes
-        # Start with a working view, then add stereo offset
+        # OpenXR provides a per-eye pose (already includes IPD offset) and per-eye FOV.
+        pos = view.pose.position
+        quat = view.pose.orientation
 
+        # Base position in MuJoCo world (VR origin). Adjust to place yourself in the scene.
+        base_pos = np.array([0.4, 0.3, 0.4], dtype=np.float64)
+
+        # Eye position in MuJoCo coordinates
+        eye_pos_mj = base_pos + self.xr_to_mj([pos.x, pos.y, pos.z])
+
+        # Forward vector: OpenXR forward is -Z
+        fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])
+        fwd_mj = self.xr_to_mj(fwd_xr)
+        fwd_mj = fwd_mj / (np.linalg.norm(fwd_mj) + 1e-12)
+
+        # Focus distance (metres). Keeping this ~1m helps stereo disparities.
+        dist = 1.0
+        lookat = eye_pos_mj + fwd_mj * dist
+
+        # Convert forward direction to MuJoCo azimuth/elevation
+        azimuth = np.degrees(np.arctan2(fwd_mj[1], fwd_mj[0]))
+        elevation = np.degrees(np.arcsin(np.clip(fwd_mj[2], -1.0, 1.0)))
+
+        # MuJoCo free camera
         cam = mujoco.MjvCamera()
         cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+        cam.lookat[:] = lookat
+        cam.distance = float(dist)
+        cam.azimuth = float(azimuth)
+        cam.elevation = float(elevation)
 
-        # Base camera setup - looking at the robot
-        cam.lookat[:] = [0.1, 0.0, 0.1]  # Look at robot base area
-        cam.distance = 0.6
-        base_azimuth = -120  # Angle to view robot nicely
-        cam.elevation = -20  # Slightly above
-
-        # Apply stereo offset via azimuth (shifts camera position laterally)
-        # For camera at distance d, lateral offset of IPD/2 requires azimuth change of:
-        # delta = arctan(IPD/2 / distance) in degrees
-        IPD = 0.063
-        stereo_angle = np.degrees(np.arctan2(IPD / 2, cam.distance))
-
-        if eye_idx == 0:
-            cam.azimuth = base_azimuth + stereo_angle  # Left eye - camera moves left
-        else:
-            cam.azimuth = base_azimuth - stereo_angle  # Right eye - camera moves right
-
-        # Set FOV from OpenXR
-        fov = view.fov
-        vfov = np.degrees(fov.angle_up - fov.angle_down)
-        self.model.vis.global_.fovy = vfov
+        # Match per-eye vertical FOV from OpenXR (radians -> degrees)
+        # Note: MjvCamera doesn't have fovy, so we set it on the model
+        vfov = np.degrees(view.fov.angle_up - view.fov.angle_down)
+        self.model.vis.global_.fovy = float(vfov)
 
         # Update scene
         mujoco.mjv_updateScene(
@@ -325,56 +335,10 @@ class MuJoCoVRViewer:
             cam, mujoco.mjtCatBit.mjCAT_ALL, self.mj_scene
         )
 
-        # Render
         viewport = mujoco.MjrRect(0, 0, width, height)
         mujoco.mjr_render(viewport, self.mj_scene, self.mj_context)
 
-        # Read back pixels for preview window
-        # Re-bind framebuffer to ensure we read from correct buffer
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, fbo)
-        GL.glReadBuffer(GL.GL_COLOR_ATTACHMENT0)
-        pixels = GL.glReadPixels(0, 0, width, height, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
-        if not hasattr(self, '_preview_images'):
-            self._preview_images = [None, None]
-        self._preview_images[eye_idx] = (pixels, width, height)
-
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
-
-    def display_preview(self):
-        """Display both eye views side-by-side using OpenCV."""
-        if not hasattr(self, '_preview_images') or None in self._preview_images:
-            return
-
-        left_pixels, lw, lh = self._preview_images[0]
-        right_pixels, rw, rh = self._preview_images[1]
-
-        # Convert to numpy arrays
-        left_img = np.frombuffer(left_pixels, dtype=np.uint8).reshape(lh, lw, 3)
-        right_img = np.frombuffer(right_pixels, dtype=np.uint8).reshape(rh, rw, 3)
-
-        # Flip vertically (OpenGL origin is bottom-left)
-        left_img = np.flipud(left_img)
-        right_img = np.flipud(right_img)
-
-        # Convert RGB to BGR for OpenCV
-        left_img = cv2.cvtColor(left_img, cv2.COLOR_RGB2BGR)
-        right_img = cv2.cvtColor(right_img, cv2.COLOR_RGB2BGR)
-
-        # Scale down for preview (1/4 size)
-        scale = 4
-        left_small = cv2.resize(left_img, (lw // scale, lh // scale))
-        right_small = cv2.resize(right_img, (rw // scale, rh // scale))
-
-        # Add labels
-        cv2.putText(left_small, "LEFT", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-        cv2.putText(right_small, "RIGHT", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 0, 0), 2)
-
-        # Combine side by side
-        combined = np.hstack([left_small, right_small])
-
-        # Display with OpenCV
-        cv2.imshow("VR Preview - LEFT | RIGHT", combined)
-        cv2.waitKey(1)
 
     def run(self):
         """Main VR render loop."""
@@ -474,9 +438,6 @@ class MuJoCoVRViewer:
                     )
                     projection_views.append(projection_view)
 
-                # Display preview in window
-                self.display_preview()
-
                 # Step simulation
                 mujoco.mj_step(self.model, self.data)
 
@@ -551,8 +512,6 @@ class MuJoCoVRViewer:
         if hasattr(self, 'window') and self.window:
             glfw.destroy_window(self.window)
             glfw.terminate()
-
-        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
