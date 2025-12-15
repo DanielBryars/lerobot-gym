@@ -8,6 +8,9 @@ Mesh files are referenced from the submodule.
   <!-- Point to mesh files in submodule -->
   <compiler angle="radian" meshdir="../assets/SO-ARM100/Simulation/SO101/assets" autolimits="true"/>
 
+  <!-- Global simulation options for reliable collision -->
+  <option timestep="0.002" impratio="1" gravity="0 0 -9.81" cone="elliptic" noslip_iterations="10"/>
+
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
     <rgba haze="0.15 0.25 0.35 1" />
@@ -90,29 +93,30 @@ Mesh files are referenced from the submodule.
   <worldbody>
     <!-- Scene elements -->
     <light pos="0 0 3.5" dir="0 0 -1" directional="true" />
-    <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane" />
+    <geom name="floor" size="0 0 0.05" pos="0 0 0" type="plane" material="groundplane" contype="1" conaffinity="3"/>
 
     <!-- Overhead camera (Nuroum V11: 90° diagonal FOV -> ~52° vertical for 16:9) -->
     <camera name="overhead_cam" pos="0.3 -0.09 0.6" axisangle="0 0 1 -1.5708" fovy="52"/>
 
     <!-- White Duplo 2x4 brick for pick and place task -->
     <!-- Duplo 2x4: 64mm x 32mm x 19.2mm body + 4.5mm studs -->
-    <!-- contype/conaffinity=3 means collides with floor (1) AND finger pads (2) -->
     <body name="duplo" pos="0.2 0.0 0.0096">
       <freejoint name="duplo_joint"/>
-      <!-- Main brick body -->
-      <geom name="duplo_body" group="0" type="box" size="0.032 0.016 0.0096" material="duplo_white" mass="0.03" contype="3" conaffinity="3"/>
+      <!-- Main brick body - high friction for gripping -->
+      <geom name="duplo_body" type="box" size="0.032 0.016 0.0096" material="duplo_white" mass="0.03"
+        contype="3" conaffinity="3" friction="100 10 0.1" condim="6" margin="0.001"
+        solref="0.002 1" solimp="0.999 0.9999 0.00001"/>
       <!-- Studs (8 total: 4x2 grid, 16mm spacing, 9.6mm diameter, 4.5mm tall) -->
       <!-- Row 1 (y = -0.008) -->
-      <geom name="stud_1" type="cylinder" size="0.0048 0.00225" pos="-0.024 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
-      <geom name="stud_2" type="cylinder" size="0.0048 0.00225" pos="-0.008 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
-      <geom name="stud_3" type="cylinder" size="0.0048 0.00225" pos="0.008 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
-      <geom name="stud_4" type="cylinder" size="0.0048 0.00225" pos="0.024 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
+      <geom name="stud_1" type="cylinder" size="0.0048 0.00225" pos="-0.024 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
+      <geom name="stud_2" type="cylinder" size="0.0048 0.00225" pos="-0.008 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
+      <geom name="stud_3" type="cylinder" size="0.0048 0.00225" pos="0.008 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
+      <geom name="stud_4" type="cylinder" size="0.0048 0.00225" pos="0.024 -0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
       <!-- Row 2 (y = +0.008) -->
-      <geom name="stud_5" type="cylinder" size="0.0048 0.00225" pos="-0.024 0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
-      <geom name="stud_6" type="cylinder" size="0.0048 0.00225" pos="-0.008 0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
-      <geom name="stud_7" type="cylinder" size="0.0048 0.00225" pos="0.008 0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
-      <geom name="stud_8" type="cylinder" size="0.0048 0.00225" pos="0.024 0.008 0.012" material="duplo_white" contype="3" conaffinity="3"/>
+      <geom name="stud_5" type="cylinder" size="0.0048 0.00225" pos="-0.024 0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
+      <geom name="stud_6" type="cylinder" size="0.0048 0.00225" pos="-0.008 0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
+      <geom name="stud_7" type="cylinder" size="0.0048 0.00225" pos="0.008 0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
+      <geom name="stud_8" type="cylinder" size="0.0048 0.00225" pos="0.024 0.008 0.012" material="duplo_white" contype="3" conaffinity="3" friction="100 10 0.1"/>
     </body>
 
     <!-- Robot arm -->
@@ -170,10 +174,21 @@ Mesh files are referenced from the submodule.
                 <geom type="mesh" class="visual" pos="8.32667e-17 -0.000218214 0.000949706" quat="0 1 0 0" mesh="wrist_roll_follower_so101_v1" contype="0" conaffinity="0" group="3"/>
                 <site group="3" name="gripperframe" pos="-0.0079 -0.000218121 -0.0981274" quat="0.707107 -0 0.707107 -2.37788e-17"/>
 
-                <!-- Fixed jaw finger pad (gripping surface) - position at jaw tip -->
+                <!-- Fixed jaw finger pad (gripping surface) - BRIGHT RED for debugging -->
                 <geom name="fixed_pad"
-                  class="fingerpad"
-                  pos="-0.006 0.0 -0.104"/>
+                  type="box"
+                  size="0.008 0.020 0.015"
+                  pos="-0.008 0.0 -0.098"
+                  contype="3"
+                  conaffinity="3"
+                  friction="100 10 0.1"
+                  condim="6"
+                  margin="0.002"
+                  solref="0.002 1"
+                  solimp="0.999 0.9999 0.00001"
+                  rgba="1 0 0 0.8"
+                  priority="1"
+                  group="0"/>
 
                 <!--
                 ================= WRIST CAMERA =================
@@ -221,11 +236,22 @@ Mesh files are referenced from the submodule.
                   <!-- Mesh collision disabled - using finger pad only -->
                   <geom type="mesh" class="visual" pos="-5.55112e-17 -5.55112e-17 0.0189" quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1" contype="0" conaffinity="0" group="3"/>
 
-                  <!-- Moving jaw finger pad (gripping surface) - position at jaw tip -->
+                  <!-- Moving jaw finger pad (gripping surface) - BRIGHT GREEN for debugging -->
                   <geom name="moving_pad"
-                    class="fingerpad"
+                    type="box"
+                    size="0.008 0.020 0.015"
+                    pos="0.0 -0.065 0.019"
                     axisangle="1 0 0 1.5708"
-                    pos="-0.011 -0.075 0.019"/>
+                    contype="3"
+                    conaffinity="3"
+                    friction="100 10 0.1"
+                    condim="6"
+                    margin="0.002"
+                    solref="0.002 1"
+                    solimp="0.999 0.9999 0.00001"
+                    rgba="0 1 0 0.8"
+                    priority="1"
+                    group="0"/>
 
                 </body>
               </body>
