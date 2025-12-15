@@ -660,21 +660,37 @@ def run_teleop_vr(port: str, fps: int = 30):
     frame_time = 1.0 / fps
     step_count = 0
     n_sim_steps = 10  # Same as gym env default
+    last_normalized = np.zeros(6, dtype=np.float32)  # For recovery from disconnects
+    consecutive_errors = 0
+    max_consecutive_errors = 30  # Give up after ~1 second at 30fps
 
     try:
         while True:
             loop_start = time.time()
 
-            # Read leader arm
-            positions = bus.sync_read("Present_Position")
-            normalized = np.array([
-                positions["shoulder_pan"],
-                positions["shoulder_lift"],
-                positions["elbow_flex"],
-                positions["wrist_flex"],
-                positions["wrist_roll"],
-                positions["gripper"],
-            ], dtype=np.float32)
+            # Read leader arm (with error recovery)
+            try:
+                positions = bus.sync_read("Present_Position")
+                normalized = np.array([
+                    positions["shoulder_pan"],
+                    positions["shoulder_lift"],
+                    positions["elbow_flex"],
+                    positions["wrist_flex"],
+                    positions["wrist_roll"],
+                    positions["gripper"],
+                ], dtype=np.float32)
+                last_normalized = normalized.copy()
+                if consecutive_errors > 0:
+                    print(f"✅ Leader arm reconnected after {consecutive_errors} missed frames")
+                consecutive_errors = 0
+            except ConnectionError as e:
+                consecutive_errors += 1
+                if consecutive_errors == 1:
+                    print(f"\n⚠️  Leader arm read failed, using last position...")
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"\n❌ Too many consecutive read errors ({consecutive_errors}), exiting.")
+                    break
+                normalized = last_normalized  # Use last known position
 
             joint_radians = normalized_to_radians(normalized)
             joint_radians = np.clip(joint_radians, SIM_ACTION_LOW, SIM_ACTION_HIGH)

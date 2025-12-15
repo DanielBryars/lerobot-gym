@@ -275,6 +275,9 @@ Mesh files are referenced from the submodule.
     <pair geom1="floor" geom2="stud_6" friction="0.5 0.5 0.005 0.0001 0.0001"/>
     <pair geom1="floor" geom2="stud_7" friction="0.5 0.5 0.005 0.0001 0.0001"/>
     <pair geom1="floor" geom2="stud_8" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <!-- Low friction between finger pads and floor (so gripper doesn't stick) -->
+    <pair geom1="floor" geom2="fixed_pad" friction="0.3 0.3 0.001 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="moving_pad" friction="0.3 0.3 0.001 0.0001 0.0001"/>
   </contact>
 
   <actuator>
