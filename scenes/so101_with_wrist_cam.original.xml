@@ -3,6 +3,8 @@
 SO101 robot model with wrist camera.
 Based on so101_new_calib.xml from SO-ARM100 submodule, with wrist camera added.
 Mesh files are referenced from the submodule.
+
+Use adjust_wrist_camera_teleop.py to interactively render this model
 -->
 <mujoco model="so101_with_wrist_cam">
   <!-- Point to mesh files in submodule -->
@@ -25,29 +27,33 @@ Mesh files are referenced from the submodule.
         <geom group="3"/>
       </default>
     </default>
+
     <default class="sts3215">
       <geom contype="0" conaffinity="0"/>
       <joint damping="0.60" frictionloss="0.052" armature="0.028"/>
       <position kp="17.8"/>
     </default>
-    <default class="backlash">
-      <joint damping="0.01" frictionloss="0" armature="0.01" limited="true" range="-0.008726646259971648 0.008726646259971648"/>
-    </default>
-  <default class="fingerpad">
-    <geom
-      type="box"
-      size="0.001 0.006 0.004"
-      friction="2.0 0.2 0.01"
-      condim="4"
-      solref="0.02 1"
-      solimp="0.95 0.99 0.001"
-      contype="2"
-      conaffinity="2"
-      rgba="0 0 0 1"
-      group="0"/>
-  </default>
-  </default>
 
+    <default class="backlash">
+      <joint damping="0.01" frictionloss="0" armature="0.01"
+            limited="true"
+            range="-0.008726646259971648 0.008726646259971648"/>
+    </default>
+
+    <!-- little rubber finger pads -->
+    <default class="fingerpad">
+      <geom
+        type="box"
+        size="0.001 0.006 0.004"
+        friction="2.0 0.2 0.01"
+        condim="4"
+        solref="-0.02 1"
+        solimp="0.95 0.99 0.001"
+        rgba="0 0 0 1"
+        group="0"/>
+    </default>
+  </default>
+  
   <asset>
     <!-- Textures and materials for scene -->
     <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
@@ -99,18 +105,18 @@ Mesh files are referenced from the submodule.
     <body name="duplo" pos="0.2 0.0 0.0096">
       <freejoint name="duplo_joint"/>
       <!-- Main brick body -->
-      <geom name="duplo_body" type="box" size="0.032 0.016 0.0096" material="duplo_white" mass="0.03" contype="2" conaffinity="2"/>
+      <geom name="duplo_body" type="box" size="0.032 0.016 0.0096" material="duplo_white" mass="0.03"/>
       <!-- Studs (8 total: 4x2 grid, 16mm spacing, 9.6mm diameter, 4.5mm tall) -->
       <!-- Row 1 (y = -0.008) -->
-      <geom name="stud_1" type="cylinder" size="0.0048 0.00225" pos="-0.024 -0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
-      <geom name="stud_2" type="cylinder" size="0.0048 0.00225" pos="-0.008 -0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
-      <geom name="stud_3" type="cylinder" size="0.0048 0.00225" pos="0.008 -0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
-      <geom name="stud_4" type="cylinder" size="0.0048 0.00225" pos="0.024 -0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
+      <geom name="stud_1" type="cylinder" size="0.0048 0.00225" pos="-0.024 -0.008 0.012" material="duplo_white"/>
+      <geom name="stud_2" type="cylinder" size="0.0048 0.00225" pos="-0.008 -0.008 0.012" material="duplo_white"/>
+      <geom name="stud_3" type="cylinder" size="0.0048 0.00225" pos="0.008 -0.008 0.012" material="duplo_white"/>
+      <geom name="stud_4" type="cylinder" size="0.0048 0.00225" pos="0.024 -0.008 0.012" material="duplo_white"/>
       <!-- Row 2 (y = +0.008) -->
-      <geom name="stud_5" type="cylinder" size="0.0048 0.00225" pos="-0.024 0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
-      <geom name="stud_6" type="cylinder" size="0.0048 0.00225" pos="-0.008 0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
-      <geom name="stud_7" type="cylinder" size="0.0048 0.00225" pos="0.008 0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
-      <geom name="stud_8" type="cylinder" size="0.0048 0.00225" pos="0.024 0.008 0.012" material="duplo_white" contype="2" conaffinity="2"/>
+      <geom name="stud_5" type="cylinder" size="0.0048 0.00225" pos="-0.024 0.008 0.012" material="duplo_white"/>
+      <geom name="stud_6" type="cylinder" size="0.0048 0.00225" pos="-0.008 0.008 0.012" material="duplo_white"/>
+      <geom name="stud_7" type="cylinder" size="0.0048 0.00225" pos="0.008 0.008 0.012" material="duplo_white"/>
+      <geom name="stud_8" type="cylinder" size="0.0048 0.00225" pos="0.024 0.008 0.012" material="duplo_white"/>
     </body>
 
     <!-- Robot arm -->
@@ -179,7 +185,8 @@ Mesh files are referenced from the submodule.
                 Use adjust_wrist_camera.py to find the right values interactively.
                 Camera looks along its -Z axis by default.
                 -->
-                
+               
+                <!-- Uses multiple bodies to make it easier to reason about the transformations-->
                 <!-- 1) Anchor -->
                 <body name="cam_anchor"
                       pos="0 0 -0.045"
@@ -218,14 +225,13 @@ Mesh files are referenced from the submodule.
                   <geom type="mesh" class="visual" pos="-5.55112e-17 -5.55112e-17 0.0189" quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1" material="moving_jaw_so101_v1_material"/>
                   <geom type="mesh" class="collision" pos="-5.55112e-17 -5.55112e-17 0.0189" quat="1 -0 3.00524e-16 -2.00834e-17" mesh="moving_jaw_so101_v1" material="moving_jaw_so101_v1_material"/>
 
-
-
+                  
                   <geom name="moving_pad"
                     class="fingerpad"
-                    axisangle="1 0 0 -1.5708"
-                    
-                    pos="-0.013 -0.077 0.0175"
+                    pos="-0.007 0.0 -0.1"
+                    group="0"
                     rgba="0 0 0 1"/>
+
 
 
                 </body>

@@ -148,7 +148,7 @@ class WristCameraPreview:
         cv2.createTrackbar("Elev", self.window_name, int(self.ext_elevation + 90), 180, lambda x: None)  # -90 to 90
         cv2.createTrackbar("LookX", self.window_name, int((self.ext_lookat_x + 1) * 500), 1000, lambda x: None)  # -1 to 1
         cv2.createTrackbar("LookY", self.window_name, int((self.ext_lookat_y + 1) * 500), 1000, lambda x: None)  # -1 to 1
-        cv2.createTrackbar("LookZ", self.window_name, int(self.ext_lookat_z * 500), 1000, lambda x: None)  # 0 to 2
+        cv2.createTrackbar("LookZ", self.window_name, int((self.ext_lookat_z + 1) * 500), 1000, lambda x: None)  # -1 to 1
 
     def _read_trackbars(self):
         """Read trackbar values and save if changed."""
@@ -173,7 +173,7 @@ class WristCameraPreview:
         self.ext_elevation = cv2.getTrackbarPos("Elev", self.window_name) - 90
         self.ext_lookat_x = cv2.getTrackbarPos("LookX", self.window_name) / 500.0 - 1.0
         self.ext_lookat_y = cv2.getTrackbarPos("LookY", self.window_name) / 500.0 - 1.0
-        self.ext_lookat_z = cv2.getTrackbarPos("LookZ", self.window_name) / 500.0
+        self.ext_lookat_z = cv2.getTrackbarPos("LookZ", self.window_name) / 500.0 - 1.0
 
         # Check if changed and save
         new_values = (
