@@ -42,7 +42,7 @@ Mesh files are referenced from the submodule.
     <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072" />
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300" />
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2" />
-    <material name="cube_material" rgba="1 0 0 1" />
+    <material name="duplo_white" rgba="0.95 0.95 0.95 1" />
 
     <!-- Robot meshes from submodule -->
     <mesh file="waveshare_mounting_plate_so101_v2.stl"/>
@@ -83,10 +83,23 @@ Mesh files are referenced from the submodule.
     <!-- Overhead camera (Nuroum V11: 90° diagonal FOV -> ~52° vertical for 16:9) -->
     <camera name="overhead_cam" pos="0.3 -0.09 0.6" axisangle="0 0 1 -1.5708" fovy="52"/>
 
-    <!-- Red cube for pick and place task -->
-    <body name="cube" pos="0.2 0.0 0.025">
-      <freejoint name="cube_joint"/>
-      <geom name="cube_geom" type="box" size="0.025 0.025 0.025" material="cube_material" mass="0.1"/>
+    <!-- White Duplo 2x4 brick for pick and place task -->
+    <!-- Duplo 2x4: 64mm x 32mm x 19.2mm body + 4.5mm studs -->
+    <body name="duplo" pos="0.2 0.0 0.0096">
+      <freejoint name="duplo_joint"/>
+      <!-- Main brick body -->
+      <geom name="duplo_body" type="box" size="0.032 0.016 0.0096" material="duplo_white" mass="0.03"/>
+      <!-- Studs (8 total: 4x2 grid, 16mm spacing, 9.6mm diameter, 4.5mm tall) -->
+      <!-- Row 1 (y = -0.008) -->
+      <geom name="stud_1" type="cylinder" size="0.0048 0.00225" pos="-0.024 -0.008 0.012" material="duplo_white"/>
+      <geom name="stud_2" type="cylinder" size="0.0048 0.00225" pos="-0.008 -0.008 0.012" material="duplo_white"/>
+      <geom name="stud_3" type="cylinder" size="0.0048 0.00225" pos="0.008 -0.008 0.012" material="duplo_white"/>
+      <geom name="stud_4" type="cylinder" size="0.0048 0.00225" pos="0.024 -0.008 0.012" material="duplo_white"/>
+      <!-- Row 2 (y = +0.008) -->
+      <geom name="stud_5" type="cylinder" size="0.0048 0.00225" pos="-0.024 0.008 0.012" material="duplo_white"/>
+      <geom name="stud_6" type="cylinder" size="0.0048 0.00225" pos="-0.008 0.008 0.012" material="duplo_white"/>
+      <geom name="stud_7" type="cylinder" size="0.0048 0.00225" pos="0.008 0.008 0.012" material="duplo_white"/>
+      <geom name="stud_8" type="cylinder" size="0.0048 0.00225" pos="0.024 0.008 0.012" material="duplo_white"/>
     </body>
 
     <!-- Robot arm -->

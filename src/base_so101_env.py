@@ -76,8 +76,8 @@ class SO101Env(gym.Env):
         self.gripper_geom_id = mujoco.mj_name2id(
             self.mj_model, mujoco.mjtObj.mjOBJ_BODY, "moving_jaw_so101_v1"
         )
-        self.cube_geom_id = mujoco.mj_name2id(
-            self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, "cube_geom"
+        self.duplo_geom_id = mujoco.mj_name2id(
+            self.mj_model, mujoco.mjtObj.mjOBJ_GEOM, "duplo_body"
         )
         self.cam_dis = cam_dis
         self.cam_azi = cam_azi
@@ -122,13 +122,13 @@ class SO101Env(gym.Env):
         return obs, {}
 
     def _compute_reward(self) -> float:
-        """Compute the reward as the negative Euclidean distance between the gripper and the cube."""
-        # Get the positions of the gripper and cube geoms
+        """Compute the reward as the negative Euclidean distance between the gripper and the duplo."""
+        # Get the positions of the gripper and duplo geoms
         gripper_pos = self.mj_data.geom_xpos[self.gripper_geom_id]
-        cube_pos = self.mj_data.geom_xpos[self.cube_geom_id]
+        duplo_pos = self.mj_data.geom_xpos[self.duplo_geom_id]
 
         # Return the negative distance as the reward
-        return -np.linalg.norm(gripper_pos - cube_pos)    
+        return -np.linalg.norm(gripper_pos - duplo_pos)    
 
     def _get_obs(self) -> np.ndarray:
         """Render observation
