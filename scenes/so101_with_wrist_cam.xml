@@ -15,6 +15,7 @@ Mesh files are referenced from the submodule.
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
     <rgba haze="0.15 0.25 0.35 1" />
     <global azimuth="160" elevation="-20" offwidth="1920" offheight="1080"/>
+    <quality shadowsize="4096"/>
   </visual>
 
   <default>
@@ -46,7 +47,7 @@ Mesh files are referenced from the submodule.
       solimp="0.999 0.9999 0.00001"
       contype="3"
       conaffinity="3"
-      rgba="0.15 0.15 0.15 1"
+      rgba="0.15 0.15 0.15 0.2"
       group="0"
       priority="1"/>
   </default>
@@ -176,9 +177,9 @@ Mesh files are referenced from the submodule.
 
                 <!-- Fixed jaw finger pad (gripping surface) - BRIGHT RED for debugging -->
                 <geom name="fixed_pad"
-                  type="box"
-                  size="0.008 0.020 0.015"
-                  pos="-0.008 0.0 -0.098"
+                  type="box"                  
+                  size="0.001 0.0065 0.015"
+                  pos="-0.0085 0.0 -0.0894"
                   contype="3"
                   conaffinity="3"
                   friction="100 10 0.1"
@@ -186,7 +187,7 @@ Mesh files are referenced from the submodule.
                   margin="0.002"
                   solref="0.002 1"
                   solimp="0.999 0.9999 0.00001"
-                  rgba="1 0 0 0.8"
+                  rgba="0 0 0 1"
                   priority="1"
                   group="0"/>
 
@@ -239,8 +240,8 @@ Mesh files are referenced from the submodule.
                   <!-- Moving jaw finger pad (gripping surface) - BRIGHT GREEN for debugging -->
                   <geom name="moving_pad"
                     type="box"
-                    size="0.008 0.020 0.015"
-                    pos="0.0 -0.065 0.019"
+                    size="0.001 0.0065 0.015"
+                    pos="-0.012 -0.0669 0.018"
                     axisangle="1 0 0 1.5708"
                     contype="3"
                     conaffinity="3"
@@ -249,7 +250,7 @@ Mesh files are referenced from the submodule.
                     margin="0.002"
                     solref="0.002 1"
                     solimp="0.999 0.9999 0.00001"
-                    rgba="0 1 0 0.8"
+                    rgba="0 0 0 1"
                     priority="1"
                     group="0"/>
 
@@ -261,6 +262,20 @@ Mesh files are referenced from the submodule.
       </body>
     </body>
   </worldbody>
+
+  <!-- Contact pairs to override friction for specific geom combinations -->
+  <contact>
+    <!-- Low friction between Duplo and floor (so it falls/slides naturally) -->
+    <pair geom1="floor" geom2="duplo_body" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_1" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_2" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_3" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_4" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_5" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_6" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_7" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+    <pair geom1="floor" geom2="stud_8" friction="0.5 0.5 0.005 0.0001 0.0001"/>
+  </contact>
 
   <actuator>
     <position class="sts3215" name="shoulder_pan" joint="shoulder_pan" forcerange="-3.35 3.35" ctrlrange="-1.91986 1.91986"/>
