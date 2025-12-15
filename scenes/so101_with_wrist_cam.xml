@@ -99,9 +99,28 @@ Mesh files are referenced from the submodule.
     <!-- Overhead camera (Nuroum V11: 90° diagonal FOV -> ~52° vertical for 16:9) -->
     <camera name="overhead_cam" pos="0.3 -0.09 0.6" axisangle="0 0 1 -1.5708" fovy="52"/>
 
+    <!-- Bowl/container for pick and place target -->
+    <!-- Position: moved 10cm right (-Y) -->
+    <!-- Square container with thin walls, 8cm x 8cm x 3cm deep -->
+    <body name="bowl" pos="0.217 -0.225 0.0">
+      <!-- Base (thin plate) -->
+      <geom name="bowl_base" type="box" size="0.04 0.04 0.002" pos="0 0 0.002" rgba="0.85 0.85 0.8 1"
+        contype="1" conaffinity="3" friction="0.5 0.5 0.01"/>
+      <!-- Walls (4 sides) -->
+      <geom name="bowl_wall_px" type="box" size="0.003 0.04 0.015" pos="0.04 0 0.017" rgba="0.85 0.85 0.8 1"
+        contype="1" conaffinity="3" friction="0.3 0.3 0.01"/>
+      <geom name="bowl_wall_nx" type="box" size="0.003 0.04 0.015" pos="-0.04 0 0.017" rgba="0.85 0.85 0.8 1"
+        contype="1" conaffinity="3" friction="0.3 0.3 0.01"/>
+      <geom name="bowl_wall_py" type="box" size="0.04 0.003 0.015" pos="0 0.04 0.017" rgba="0.85 0.85 0.8 1"
+        contype="1" conaffinity="3" friction="0.3 0.3 0.01"/>
+      <geom name="bowl_wall_ny" type="box" size="0.04 0.003 0.015" pos="0 -0.04 0.017" rgba="0.85 0.85 0.8 1"
+        contype="1" conaffinity="3" friction="0.3 0.3 0.01" mass="0.1"/>
+    </body>
+
     <!-- White Duplo 2x4 brick for pick and place task -->
     <!-- Duplo 2x4: 64mm x 32mm x 19.2mm body + 4.5mm studs -->
-    <body name="duplo" pos="0.2 0.0 0.0096">
+    <!-- Position: moved 10cm left (+Y) -->
+    <body name="duplo" pos="0.217 0.225 0.0096">
       <freejoint name="duplo_joint"/>
       <!-- Main brick body - high friction for gripping -->
       <geom name="duplo_body" type="box" size="0.032 0.016 0.0096" material="duplo_white" mass="0.03"
