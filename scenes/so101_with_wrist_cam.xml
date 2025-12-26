@@ -101,19 +101,19 @@ Mesh files are referenced from the submodule.
 
     <!-- Bowl/container for pick and place target -->
     <!-- Position: moved 10cm right (-Y) -->
-    <!-- Square container with thin walls, 8cm x 8cm x 3cm deep -->
+    <!-- Square container with thin walls, 12cm x 12cm x 3cm deep -->
     <body name="bowl" pos="0.217 -0.225 0.0">
       <!-- Base (thin plate) -->
-      <geom name="bowl_base" type="box" size="0.04 0.04 0.002" pos="0 0 0.002" rgba="0.85 0.85 0.8 1"
+      <geom name="bowl_base" type="box" size="0.06 0.06 0.002" pos="0 0 0.002" rgba="0.85 0.85 0.8 1"
         contype="1" conaffinity="3" friction="0.5 0.5 0.01"/>
       <!-- Walls (4 sides) -->
-      <geom name="bowl_wall_px" type="box" size="0.003 0.04 0.015" pos="0.04 0 0.017" rgba="0.85 0.85 0.8 1"
+      <geom name="bowl_wall_px" type="box" size="0.003 0.06 0.015" pos="0.06 0 0.017" rgba="0.85 0.85 0.8 1"
         contype="1" conaffinity="3" friction="0.3 0.3 0.01"/>
-      <geom name="bowl_wall_nx" type="box" size="0.003 0.04 0.015" pos="-0.04 0 0.017" rgba="0.85 0.85 0.8 1"
+      <geom name="bowl_wall_nx" type="box" size="0.003 0.06 0.015" pos="-0.06 0 0.017" rgba="0.85 0.85 0.8 1"
         contype="1" conaffinity="3" friction="0.3 0.3 0.01"/>
-      <geom name="bowl_wall_py" type="box" size="0.04 0.003 0.015" pos="0 0.04 0.017" rgba="0.85 0.85 0.8 1"
+      <geom name="bowl_wall_py" type="box" size="0.06 0.003 0.015" pos="0 0.06 0.017" rgba="0.85 0.85 0.8 1"
         contype="1" conaffinity="3" friction="0.3 0.3 0.01"/>
-      <geom name="bowl_wall_ny" type="box" size="0.04 0.003 0.015" pos="0 -0.04 0.017" rgba="0.85 0.85 0.8 1"
+      <geom name="bowl_wall_ny" type="box" size="0.06 0.003 0.015" pos="0 -0.06 0.017" rgba="0.85 0.85 0.8 1"
         contype="1" conaffinity="3" friction="0.3 0.3 0.01" mass="0.1"/>
     </body>
 
@@ -297,6 +297,12 @@ Mesh files are referenced from the submodule.
     <!-- Low friction between finger pads and floor (so gripper doesn't stick) -->
     <pair geom1="floor" geom2="fixed_pad" friction="0.3 0.3 0.001 0.0001 0.0001"/>
     <pair geom1="floor" geom2="moving_pad" friction="0.3 0.3 0.001 0.0001 0.0001"/>
+    <!-- Low friction between Duplo and bowl (so it slides in naturally) -->
+    <pair geom1="bowl_base" geom2="duplo_body" friction="0.3 0.3 0.005 0.0001 0.0001"/>
+    <pair geom1="bowl_wall_px" geom2="duplo_body" friction="0.3 0.3 0.005 0.0001 0.0001"/>
+    <pair geom1="bowl_wall_nx" geom2="duplo_body" friction="0.3 0.3 0.005 0.0001 0.0001"/>
+    <pair geom1="bowl_wall_py" geom2="duplo_body" friction="0.3 0.3 0.005 0.0001 0.0001"/>
+    <pair geom1="bowl_wall_ny" geom2="duplo_body" friction="0.3 0.3 0.005 0.0001 0.0001"/>
   </contact>
 
   <actuator>
