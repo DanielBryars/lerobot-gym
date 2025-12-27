@@ -125,9 +125,11 @@ class VRRenderer:
         self.recenter_action = None
         self.hand_paths = []
 
-        # Scene positioning (MuJoCo coords)
-        self.base_pos = np.array([0.4, 0.3, -0.9], dtype=np.float64)
+        # Scene positioning (MuJoCo coords: X=forward, Y=left, Z=up)
+        # Z=0.5 puts camera ~0.5m above the floor (table height)
+        self.base_pos = np.array([0.4, 0.3, 0.5], dtype=np.float64)
         self.last_head_pos = None
+        self.last_head_fwd = None  # Head forward direction in XR coords
 
     def init_all(self):
         """Initialize GLFW, OpenXR, and MuJoCo rendering."""
@@ -278,10 +280,10 @@ class VRRenderer:
                 self.right_thumbstick_y_action,
                 xr.string_to_path(self.instance, "/user/hand/right/input/thumbstick/y"),
             ),
-            # A button: recenter
+            # X button (left controller): recenter
             xr.ActionSuggestedBinding(
                 self.recenter_action,
-                xr.string_to_path(self.instance, "/user/hand/right/input/a/click"),
+                xr.string_to_path(self.instance, "/user/hand/left/input/x/click"),
             ),
         ]
 
@@ -298,7 +300,7 @@ class VRRenderer:
         attach_info = xr.SessionActionSetsAttachInfo(action_sets=[self.action_set])
         xr.attach_session_action_sets(self.session, attach_info)
 
-        print("Controller actions initialized (left stick = move, A = recenter)")
+        print("Controller actions initialized (left stick = move, X = recenter)")
 
     def _init_swapchains(self):
         # Ensure our context is current before creating FBOs
@@ -480,12 +482,18 @@ class VRRenderer:
         except:
             pass
 
-        # Right thumbstick X (additional left/right strafe)
+        # Right thumbstick X: rotate view around robot (orbit)
         try:
             state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_x_action, subaction_path=xr.NULL_PATH)
             state = xr.get_action_state_float(self.session, state_info)
             if state.is_active and abs(state.current_state) > 0.1:
-                self.base_pos[1] -= state.current_state * move_speed  # Left/right
+                # Rotate base_pos around Z axis (orbit around robot)
+                rot_speed = 0.03  # radians per frame
+                angle = -state.current_state * rot_speed
+                cos_a, sin_a = np.cos(angle), np.sin(angle)
+                x, y = self.base_pos[0], self.base_pos[1]
+                self.base_pos[0] = x * cos_a - y * sin_a
+                self.base_pos[1] = x * sin_a + y * cos_a
         except Exception as e:
             pass
 
@@ -498,9 +506,9 @@ class VRRenderer:
         except Exception as e:
             pass
 
-        # Get recenter button (A on right controller)
+        # Get recenter button (X on left controller)
         try:
-            state_info = xr.ActionStateGetInfo(action=self.recenter_action, subaction_path=self.hand_paths[1])
+            state_info = xr.ActionStateGetInfo(action=self.recenter_action, subaction_path=self.hand_paths[0])
             state = xr.get_action_state_boolean(self.session, state_info)
             if state.is_active and state.current_state and state.changed_since_last_sync:
                 self._recenter_scene()
@@ -508,18 +516,18 @@ class VRRenderer:
             pass
 
     def _recenter_scene(self):
-        """Move scene so robot is in front of current head position."""
+        """Move scene so robot is 30cm in front at waist height, user always faces robot front."""
         if self.last_head_pos is None:
             return
 
         # Convert head position to MuJoCo coordinates
         head_mj = self.xr_to_mj(self.last_head_pos)
 
-        # Place robot 0.5m in front of head at table height
-        robot_pos = np.array([0.1, 0.0, 0.1])  # Robot origin in MuJoCo
-        desired_offset = np.array([0.5, 0.0, 0.0])  # 0.5m in front
-
-        self.base_pos = robot_pos - head_mj - desired_offset
+        # Formula: eye_pos_mj = base_pos + head_mj
+        # We want eye_pos_mj = [0.3, 0, 0.5] (30cm from robot, 0.5m above table)
+        # So: base_pos = desired_eye_pos - head_mj
+        desired_eye_pos = np.array([0.3, 0.0, 0.5])  # 30cm in front, 0.5m above table
+        self.base_pos = desired_eye_pos - head_mj
         print(f"Scene recentered! base_pos: [{self.base_pos[0]:.2f}, {self.base_pos[1]:.2f}, {self.base_pos[2]:.2f}]")
 
     def render_frame(self):
@@ -557,10 +565,13 @@ class VRRenderer:
         )
         view_state, views = xr.locate_views(self.session, view_locate_info)
 
-        # Store head position for recentering (from left eye, roughly center)
+        # Store head position and forward direction for recentering (from left eye)
         if len(views) > 0:
             pos = views[0].pose.position
+            quat = views[0].pose.orientation
             self.last_head_pos = np.array([pos.x, pos.y, pos.z])
+            # Forward direction in XR is -Z
+            self.last_head_fwd = self.quat_rotate(quat, [0.0, 0.0, -1.0])
 
         # Poll controller input
         self._handle_controller_input(frame_state.predicted_display_time)
