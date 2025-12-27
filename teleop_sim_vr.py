@@ -128,6 +128,7 @@ class VRRenderer:
         # Scene positioning (MuJoCo coords: X=forward, Y=left, Z=up)
         # Z=0.5 puts camera ~0.5m above the floor (table height)
         self.base_pos = np.array([0.4, 0.3, 0.5], dtype=np.float64)
+        self.view_yaw = 0.0  # Rotation around Z axis (radians)
         self.last_head_pos = None
         self.last_head_fwd = None  # Head forward direction in XR coords
 
@@ -388,6 +389,15 @@ class VRRenderer:
         v = np.array(v, dtype=np.float64)
         return np.array([-v[2], -v[0], v[1]], dtype=np.float64)
 
+    def rotate_z(self, v, angle):
+        """Rotate vector v around Z axis by angle (radians)."""
+        c, s = np.cos(angle), np.sin(angle)
+        return np.array([
+            v[0] * c - v[1] * s,
+            v[0] * s + v[1] * c,
+            v[2]
+        ], dtype=np.float64)
+
     def render_eye(self, eye_idx, view, fbo, width, height):
         """Render scene for one eye."""
         # Ensure our context is current (gym env may have changed it)
@@ -402,13 +412,19 @@ class VRRenderer:
         quat = view.pose.orientation
 
         xr_pos = np.array([pos.x, pos.y, pos.z])
-        eye_pos_mj = self.base_pos + self.xr_to_mj(xr_pos)
+        eye_pos_mj_raw = self.base_pos + self.xr_to_mj(xr_pos)
 
         fwd_xr = self.quat_rotate(quat, [0.0, 0.0, -1.0])
         right_xr = self.quat_rotate(quat, [1.0, 0.0, 0.0])
 
-        fwd_mj = self.xr_to_mj(fwd_xr)
-        right_mj = self.xr_to_mj(right_xr)
+        fwd_mj_raw = self.xr_to_mj(fwd_xr)
+        right_mj_raw = self.xr_to_mj(right_xr)
+
+        # Apply view_yaw rotation around Z axis (orbit around robot at origin)
+        eye_pos_mj = self.rotate_z(eye_pos_mj_raw, self.view_yaw)
+        fwd_mj = self.rotate_z(fwd_mj_raw, self.view_yaw)
+        right_mj = self.rotate_z(right_mj_raw, self.view_yaw)
+
         fwd_mj = fwd_mj / (np.linalg.norm(fwd_mj) + 1e-12)
         right_mj = right_mj / (np.linalg.norm(right_mj) + 1e-12)
         up_mj = np.cross(right_mj, fwd_mj)
@@ -487,13 +503,8 @@ class VRRenderer:
             state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_x_action, subaction_path=xr.NULL_PATH)
             state = xr.get_action_state_float(self.session, state_info)
             if state.is_active and abs(state.current_state) > 0.1:
-                # Rotate base_pos around Z axis (orbit around robot)
                 rot_speed = 0.03  # radians per frame
-                angle = -state.current_state * rot_speed
-                cos_a, sin_a = np.cos(angle), np.sin(angle)
-                x, y = self.base_pos[0], self.base_pos[1]
-                self.base_pos[0] = x * cos_a - y * sin_a
-                self.base_pos[1] = x * sin_a + y * cos_a
+                self.view_yaw += state.current_state * rot_speed
         except Exception as e:
             pass
 
@@ -523,11 +534,12 @@ class VRRenderer:
         # Convert head position to MuJoCo coordinates
         head_mj = self.xr_to_mj(self.last_head_pos)
 
-        # Formula: eye_pos_mj = base_pos + head_mj
+        # Formula: eye_pos_mj = base_pos + head_mj (before view_yaw rotation)
         # We want eye_pos_mj = [0.3, 0, 0.5] (30cm from robot, 0.5m above table)
         # So: base_pos = desired_eye_pos - head_mj
         desired_eye_pos = np.array([0.3, 0.0, 0.5])  # 30cm in front, 0.5m above table
         self.base_pos = desired_eye_pos - head_mj
+        self.view_yaw = 0.0  # Reset rotation
         print(f"Scene recentered! base_pos: [{self.base_pos[0]:.2f}, {self.base_pos[1]:.2f}, {self.base_pos[2]:.2f}]")
 
     def render_frame(self):
