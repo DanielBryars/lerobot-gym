@@ -173,6 +173,10 @@ class VRRenderer:
         )
 
     def _init_session(self):
+        import sys
+        if sys.platform != "win32":
+            raise RuntimeError(f"VR renderer only supports Windows (current platform: {sys.platform})")
+
         # Get OpenGL requirements
         pfn = ctypes.cast(
             xr.get_instance_proc_addr(self.instance, "xrGetOpenGLGraphicsRequirementsKHR"),
@@ -181,7 +185,7 @@ class VRRenderer:
         graphics_requirements = xr.GraphicsRequirementsOpenGLKHR()
         pfn(self.instance, self.system_id, ctypes.byref(graphics_requirements))
 
-        # Create graphics binding (Windows)
+        # Create graphics binding (Windows only)
         from OpenGL import WGL
         graphics_binding = xr.GraphicsBindingOpenGLWin32KHR(
             h_dc=WGL.wglGetCurrentDC(),
@@ -500,7 +504,7 @@ class VRRenderer:
 
         # Right thumbstick X: rotate view around robot (orbit)
         try:
-            state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_x_action, subaction_path=xr.NULL_PATH)
+            state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_x_action, subaction_path=self.hand_paths[1])
             state = xr.get_action_state_float(self.session, state_info)
             if state.is_active and abs(state.current_state) > 0.1:
                 rot_speed = 0.03  # radians per frame
@@ -510,7 +514,7 @@ class VRRenderer:
 
         # Right thumbstick Y (up/down in MuJoCo = Z axis)
         try:
-            state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_y_action, subaction_path=xr.NULL_PATH)
+            state_info = xr.ActionStateGetInfo(action=self.right_thumbstick_y_action, subaction_path=self.hand_paths[1])
             state = xr.get_action_state_float(self.session, state_info)
             if state.is_active and abs(state.current_state) > 0.1:
                 self.base_pos[2] += state.current_state * move_speed  # Up/down
@@ -527,20 +531,29 @@ class VRRenderer:
             pass
 
     def _recenter_scene(self):
-        """Move scene so robot is 30cm in front at waist height, user always faces robot front."""
+        """Move scene so robot is 30cm in front at waist height, aligned with user's facing direction."""
         if self.last_head_pos is None:
             return
 
         # Convert head position to MuJoCo coordinates
         head_mj = self.xr_to_mj(self.last_head_pos)
 
-        # Formula: eye_pos_mj = base_pos + head_mj (before view_yaw rotation)
-        # We want eye_pos_mj = [0.3, 0, 0.5] (30cm from robot, 0.5m above table)
-        # So: base_pos = desired_eye_pos - head_mj
-        desired_eye_pos = np.array([0.3, 0.0, 0.5])  # 30cm in front, 0.5m above table
-        self.base_pos = desired_eye_pos - head_mj
-        self.view_yaw = 0.0  # Reset rotation
-        print(f"Scene recentered! base_pos: [{self.base_pos[0]:.2f}, {self.base_pos[1]:.2f}, {self.base_pos[2]:.2f}]")
+        # Compute yaw from head forward direction so robot aligns with user's facing
+        if self.last_head_fwd is not None:
+            fwd_mj = self.xr_to_mj(self.last_head_fwd)
+            # Yaw angle: how much user is rotated from looking at +X (robot front)
+            # We want to counter-rotate the scene so robot appears in front
+            self.view_yaw = -np.arctan2(fwd_mj[1], fwd_mj[0])
+        else:
+            self.view_yaw = 0.0
+
+        # Final eye position is: rotate_z(base_pos + head_mj, view_yaw)
+        # We want this to equal desired_eye_pos
+        # So: base_pos + head_mj = rotate_z(desired_eye_pos, -view_yaw)
+        # Thus: base_pos = rotate_z(desired_eye_pos, -view_yaw) - head_mj
+        desired_eye_pos = np.array([-0.2, 0.0, 0.55])  
+        self.base_pos = self.rotate_z(desired_eye_pos, -self.view_yaw) - head_mj
+        print(f"Scene recentered! base_pos: [{self.base_pos[0]:.2f}, {self.base_pos[1]:.2f}, {self.base_pos[2]:.2f}], yaw: {np.degrees(self.view_yaw):.1f}°")
 
     def render_frame(self):
         """Render one VR frame. Returns False if should exit."""
@@ -674,8 +687,8 @@ def run_teleop_vr(port: str, fps: int = 30):
     print("")
     print("Controller Controls:")
     print("  Left Thumbstick:  Forward/back (Y), Left/right (X)")
-    print("  Right Thumbstick: Up/down (Y), Strafe left/right (X)")
-    print("  A Button (right): Recenter robot in front of you")
+    print("  Right Thumbstick: Up/down (Y), Rotate view (X)")
+    print("  X Button (left):  Recenter robot in front of you")
     print("")
     print("Press Ctrl+C to exit")
     print("="*50 + "\n")
@@ -774,8 +787,8 @@ def run_vr_test(fps: int = 30):
     print("")
     print("Controller Controls:")
     print("  Left Thumbstick:  Forward/back (Y), Left/right (X)")
-    print("  Right Thumbstick: Up/down (Y), Strafe left/right (X)")
-    print("  A Button (right): Recenter robot in front of you")
+    print("  Right Thumbstick: Up/down (Y), Rotate view (X)")
+    print("  X Button (left):  Recenter robot in front of you")
     print("")
     print("Press Ctrl+C to exit")
     print("="*50 + "\n")
